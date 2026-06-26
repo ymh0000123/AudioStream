@@ -1,0 +1,18 @@
+# Binaries
+*.exe
+
+# Third-party packages
+*.7z
+
+# Runtime logs/output
+server_out.txt
+server_err.txt
+server_test.log
+
+# AI tool directories
+.deepseek/
+.kagent/
+.mimocode/
+
+# Go
+vendor/

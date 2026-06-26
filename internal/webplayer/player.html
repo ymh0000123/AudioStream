@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AudioStream Web 播放器</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f0f1a;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .container {
+    background: #1a1a2e;
+    border-radius: 20px;
+    padding: 40px;
+    max-width: 480px;
+    width: 90%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    text-align: center;
+  }
+  .logo { font-size: 48px; margin-bottom: 10px; }
+  h1 {
+    font-size: 24px; font-weight: 600; margin-bottom: 6px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .subtitle { color: #888; font-size: 14px; margin-bottom: 30px; }
+  .status-card {
+    background: #16213e; border-radius: 12px; padding: 20px; margin-bottom: 24px;
+  }
+  .status-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 0; border-bottom: 1px solid #1a1a3e;
+  }
+  .status-row:last-child { border-bottom: none; }
+  .label { color: #888; font-size: 13px; }
+  .value { font-size: 14px; font-weight: 500; }
+  .status-indicator { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot.connected { background: #4ade80; box-shadow: 0 0 8px #4ade8044; }
+  .dot.disconnected { background: #f87171; }
+  .dot.connecting { background: #fbbf24; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .controls { display: flex; gap: 12px; justify-content: center; margin-bottom: 24px; }
+  .btn {
+    background: #2a2a4a; border: none; color: #e0e0e0; padding: 10px 24px;
+    border-radius: 8px; cursor: pointer; font-size: 14px; transition: all .2s;
+  }
+  .btn:hover { background: #3a3a5a; }
+  .btn.primary { background: linear-gradient(135deg, #667eea, #764ba2); }
+  .btn.primary:hover { opacity: .9; }
+  .btn.primary:disabled { opacity: .4; cursor: not-allowed; }
+  .btn.danger { background: #dc2626; }
+  .btn.danger:hover { background: #b91c1c; }
+  .volume-control {
+    display: flex; align-items: center; gap: 12px;
+    justify-content: center; margin-bottom: 20px;
+  }
+  .volume-control label { color: #888; font-size: 13px; }
+  input[type="range"] {
+    -webkit-appearance: none; width: 160px; height: 4px;
+    background: #2a2a4a; border-radius: 2px; outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 16px; height: 16px;
+    background: #667eea; border-radius: 50%; cursor: pointer;
+  }
+  .stats {
+    display: flex; gap: 20px; justify-content: center;
+    font-size: 12px; color: #666; flex-wrap: wrap;
+  }
+  .stats span { white-space: nowrap; }
+  .error-box {
+    background: #2d1b1b; border: 1px solid #dc262644; border-radius: 8px;
+    padding: 12px; margin-top: 16px; font-size: 13px; color: #f87171; display: none;
+  }
+  .volume-indicator {
+    width: 100%; height: 3px; background: #2a2a4a;
+    border-radius: 2px; margin-top: 8px; overflow: hidden;
+  }
+  .volume-bar {
+    height: 100%; background: linear-gradient(90deg,#667eea,#764ba2);
+    width: 0%; transition: width .1s; border-radius: 2px;
+  }
+  .debug-info {
+    margin-top: 16px; font-size: 11px; color: #555;
+    text-align: left; word-break: break-all;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="logo">🎵</div>
+  <h1>AudioStream</h1>
+  <p class="subtitle">跨平台音频流 — Web 播放器</p>
+
+  <div class="status-card">
+    <div class="status-row">
+      <span class="label">连接状态</span>
+      <span class="value">
+        <span class="status-indicator">
+          <span class="dot disconnected" id="statusDot"></span>
+          <span id="statusText">未连接</span>
+        </span>
+      </span>
+    </div>
+    <div class="status-row">
+      <span class="label">音频格式</span>
+      <span class="value" id="audioFormat">等待连接...</span>
+    </div>
+    <div class="status-row">
+      <span class="label">已接收数据</span>
+      <span class="value" id="receivedData">0 KB</span>
+    </div>
+    <div class="status-row" id="bufferRow">
+      <span class="label">缓冲状态</span>
+      <span class="value" id="bufferStatus">-</span>
+    </div>
+    <div class="status-row">
+      <span class="label">AudioContext 状态</span>
+      <span class="value" id="audioCtxStatus">未创建</span>
+    </div>
+  </div>
+
+  <div class="volume-control">
+    <label>🔊 音量</label>
+    <input type="range" id="volumeSlider" min="0" max="100" value="80">
+    <span id="volumeLabel">80%</span>
+  </div>
+
+  <div class="controls">
+    <button class="btn primary" id="connectBtn" onclick="toggleConnection()">🎧 连接</button>
+    <button class="btn danger" id="disconnectBtn" onclick="disconnect()" disabled>断开</button>
+  </div>
+
+  <div class="volume-indicator">
+    <div class="volume-bar" id="vuBar"></div>
+  </div>
+
+  <div class="error-box" id="errorBox"></div>
+
+  <div class="stats">
+    <span>采样率: <strong id="statSampleRate">-</strong></span>
+    <span>通道: <strong id="statChannels">-</strong></span>
+    <span>位深: <strong id="statBits">-</strong></span>
+    <span>延迟: <strong id="statLatency">-</strong></span>
+  </div>
+
+  <div class="debug-info" id="debugInfo">就绪，点击"连接"开始</div>
+</div>
+
+<script>
+// ========== 状态 ==========
+let ws = null;
+let audioCtx = null;
+let audioFormat = null;
+let connected = false;
+let receivedBytes = 0;
+let startTime = 0;
+let nextPlayTime = 0;
+let playbackQueue = [];
+let isPlaying = false;
+let vuTimer = null;
+let analyser = null;
+let dataArray = null;
+
+const connectBtn = document.getElementById('connectBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const audioFormatEl = document.getElementById('audioFormat');
+const receivedDataEl = document.getElementById('receivedData');
+const bufferStatusEl = document.getElementById('bufferStatus');
+const errorBox = document.getElementById('errorBox');
+const volumeSlider = document.getElementById('volumeSlider');
+const volumeLabel = document.getElementById('volumeLabel');
+const vuBar = document.getElementById('vuBar');
+const audioCtxStatus = document.getElementById('audioCtxStatus');
+const debugInfo = document.getElementById('debugInfo');
+
+function debug(msg) {
+  const t = new Date().toLocaleTimeString();
+  debugInfo.textContent = '[' + t + '] ' + msg;
+  console.log('[AudioStream]', msg);
+}
+
+// ========== 音量控制 ==========
+volumeSlider.addEventListener('input', function() {
+  const val = this.value / 100;
+  volumeLabel.textContent = this.value + '%';
+  if (audioCtx && audioCtx._gainNode) {
+    audioCtx._gainNode.gain.value = val;
+  }
+});
+
+// ========== VU 表 ==========
+function startVUMeter() {
+  if (vuTimer) return;
+  vuTimer = setInterval(() => {
+    if (analyser && connected && dataArray) {
+      try {
+        analyser.getByteTimeDomainData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          const val = (dataArray[i] - 128) / 128;
+          sum += val * val;
+        }
+        const rms = Math.sqrt(sum / dataArray.length);
+        let pct = Math.min(rms * 5, 1) * 100;
+        vuBar.style.width = pct + '%';
+      } catch(e) { /* ignore */ }
+    } else {
+      vuBar.style.width = '0%';
+    }
+  }, 80);
+}
+
+// ========== 连接管理 ==========
+function getWebSocketURL() {
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return protocol + '//' + location.host + '/ws';
+}
+
+function getAudioContextStatus() {
+  if (!audioCtx) return '未创建';
+  return audioCtx.state + (audioCtx.sampleRate ? ' (' + audioCtx.sampleRate + 'Hz)' : '');
+}
+
+function connect() {
+  if (ws) return;
+
+  // ★ 核心修复：在用户点击的同步上下文中创建 AudioContext ★
+  // 浏览器自动播放策略要求 AudioContext 必须由用户手势触发
+  if (!audioCtx) {
+    try {
+      debug('正在创建 AudioContext...');
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      audioCtx._gainNode = audioCtx.createGain();
+      audioCtx._gainNode.gain.value = volumeSlider.value / 100;
+      audioCtx._gainNode.connect(audioCtx.destination);
+      audioCtxStatus.textContent = getAudioContextStatus();
+      debug('AudioContext 已创建: ' + audioCtx.state);
+    } catch(e) {
+      showError('创建 AudioContext 失败 (浏览器可能不支持): ' + e.message);
+      debug('AudioContext 创建失败: ' + e.message);
+      return;
+    }
+  }
+
+  // 尝试恢复（某些浏览器即使同步创建也可能是 suspended）
+  if (audioCtx.state === 'suspended') {
+    debug('AudioContext 处于 suspended 状态，尝试 resume...');
+    audioCtx.resume().then(() => {
+      debug('AudioContext 已恢复: ' + audioCtx.state);
+      audioCtxStatus.textContent = getAudioContextStatus();
+    }).catch(e => {
+      debug('AudioContext resume 失败: ' + e.message);
+    });
+  }
+
+  audioCtxStatus.textContent = getAudioContextStatus();
+  setStatus('connecting', '连接中...');
+  showError('');
+
+  const url = getWebSocketURL();
+  debug('正在连接 WebSocket: ' + url);
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = function() {
+    connected = true;
+    startTime = Date.now();
+    receivedBytes = 0;
+    nextPlayTime = 0;
+    playbackQueue = [];
+    setStatus('connected', '已连接');
+    connectBtn.disabled = true;
+    disconnectBtn.disabled = false;
+
+    // AudioContext 已在 connect() 中创建，这里只确保 resume
+    if (audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(e => {});
+    }
+    audioCtxStatus.textContent = getAudioContextStatus();
+    debug('WebSocket 已连接');
+  };
+
+  ws.onmessage = function(event) {
+    if (event.data instanceof ArrayBuffer) {
+      // PCM 二进制数据
+      if (!audioCtx || !audioFormat) {
+        // 还没收到格式信息，先不要丢弃数据
+        return;
+      }
+      try {
+        receivePCM(event.data);
+      } catch(e) {
+        console.error('PCM 播放出错:', e);
+      }
+    } else {
+      // JSON 格式信息（第一条消息）
+      try {
+        const msg = JSON.parse(event.data);
+        debug('收到格式信息: sample_rate=' + msg.sample_rate +
+              ' channels=' + msg.channels + ' bits=' + msg.bits_per_sample);
+        if (msg.type === 'format') {
+          audioFormat = msg;
+          updateFormatInfo(msg);
+        }
+      } catch(e) {
+        console.error('解析格式信息失败:', e);
+      }
+    }
+  };
+
+  ws.onerror = function(err) {
+    showError('WebSocket 连接错误 - 请确保 Server 正在运行');
+    debug('WebSocket 错误');
+    disconnect();
+  };
+
+  ws.onclose = function(e) {
+    debug('WebSocket 已断开 (code=' + e.code + ' reason=' + e.reason + ')');
+    setStatus('disconnected', '已断开');
+    connectBtn.disabled = false;
+    disconnectBtn.disabled = true;
+    connected = false;
+    // 不关闭 AudioContext，保留以便下次连接时复用
+    analyser = null;
+    nextPlayTime = 0;
+  };
+}
+
+function disconnect() {
+  if (ws) {
+    ws.onclose = null;
+    ws.close();
+    ws = null;
+  }
+  connected = false;
+  setStatus('disconnected', '已断开');
+  connectBtn.disabled = false;
+  disconnectBtn.disabled = true;
+  analyser = null;
+  nextPlayTime = 0;
+  playbackQueue = [];
+  debug('已断开连接');
+}
+
+function toggleConnection() {
+  if (connected) {
+    disconnect();
+  } else {
+    connect();
+  }
+}
+
+// ========== PCM 播放 ==========
+function receivePCM(data) {
+  receivedBytes += data.byteLength;
+  updateStats();
+
+  if (!audioFormat) return;
+
+  const bytesPerSample = audioFormat.bits_per_sample / 8;
+  const frameCount = data.byteLength / bytesPerSample / audioFormat.channels;
+  if (frameCount <= 0 || !isFinite(frameCount) || Math.floor(frameCount) !== frameCount) {
+    return; // 数据不完整，跳过
+  }
+
+  try {
+    // 16-bit PCM → Float32
+    const int16Data = new Int16Array(data);
+    const floatData = new Float32Array(int16Data.length);
+    for (let i = 0; i < int16Data.length; i++) {
+      floatData[i] = int16Data[i] / 32768;
+    }
+
+    // 创建 AudioBuffer
+    const buffer = audioCtx.createBuffer(
+      audioFormat.channels, Math.floor(frameCount), audioFormat.sample_rate
+    );
+    for (let ch = 0; ch < audioFormat.channels; ch++) {
+      const channelData = buffer.getChannelData(ch);
+      for (let i = 0; i < frameCount; i++) {
+        channelData[i] = floatData[i * audioFormat.channels + ch];
+      }
+    }
+
+    scheduleBuffer(buffer);
+  } catch(e) {
+    debug('AudioBuffer 处理出错: ' + e.message);
+  }
+}
+
+function scheduleBuffer(buffer) {
+  if (!audioCtx) return;
+
+  // 确保 analyser 已创建
+  if (!analyser) {
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    dataArray = new Uint8Array(analyser.fftSize);
+  }
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+
+  // 音频节点链: source → analyser → gainNode → destination
+  source.connect(analyser);
+  analyser.connect(audioCtx._gainNode);
+
+  // 时序调度：消除播放间隙
+  const now = audioCtx.currentTime;
+  if (nextPlayTime < now) {
+    nextPlayTime = now;
+  }
+
+  source.start(nextPlayTime);
+  nextPlayTime += buffer.duration;
+
+  // 确保 AudioContext 处于运行状态
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(e => {});
+  }
+
+  // 更新缓冲状态
+  const buffered = nextPlayTime - audioCtx.currentTime;
+  bufferStatusEl.textContent = (buffered * 1000).toFixed(0) + ' ms';
+  audioCtxStatus.textContent = getAudioContextStatus();
+}
+
+// ========== UI 更新 ==========
+function setStatus(state, text) {
+  statusDot.className = 'dot ' + state;
+  statusText.textContent = text;
+  if (state === 'connected') {
+    audioFormatEl.textContent = '接收中...';
+  }
+}
+
+function updateFormatInfo(fmt) {
+  const str = fmt.sample_rate + 'Hz / ' + fmt.channels + 'ch / ' + fmt.bits_per_sample + 'bit';
+  audioFormatEl.textContent = str;
+  document.getElementById('statSampleRate').textContent = fmt.sample_rate + 'Hz';
+  document.getElementById('statChannels').textContent = fmt.channels + 'ch';
+  document.getElementById('statBits').textContent = fmt.bits_per_sample + 'bit';
+  document.getElementById('statLatency').textContent = '实时';
+}
+
+function updateStats() {
+  const elapsed = (Date.now() - startTime) / 1000;
+  const kb = (receivedBytes / 1024).toFixed(1);
+  const mb = (receivedBytes / 1024 / 1024).toFixed(3);
+  if (receivedBytes > 1024 * 1024) {
+    receivedDataEl.textContent = mb + ' MB';
+    if (elapsed > 0) {
+      document.getElementById('statLatency').textContent =
+        (receivedBytes / elapsed / 1024).toFixed(0) + ' KB/s';
+    }
+  } else {
+    receivedDataEl.textContent = kb + ' KB';
+  }
+}
+
+function showError(msg) {
+  if (msg) {
+    errorBox.textContent = msg;
+    errorBox.style.display = 'block';
+  } else {
+    errorBox.style.display = 'none';
+  }
+}
+
+// ========== 初始化 ==========
+startVUMeter();
+setStatus('disconnected', '未连接');
+debug('页面已加载，点击"连接"开始');
+</script>
+</body>
+</html>

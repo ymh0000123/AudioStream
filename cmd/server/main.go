@@ -1,6 +1,5 @@
 // AudioStream Server - 音频流发送端
-// 捕获系统音频输出并通过 TCP 发送到客户端
-// 同时支持 Web 浏览器播放（通过 WebSocket）
+// 捕获系统音频输出并通过 WebSocket 传输到浏览器播放
 package main
 
 import (
@@ -14,15 +13,14 @@ import (
 	"syscall"
 
 	qr "github.com/skip2/go-qrcode"
+	"github.com/grandcat/zeroconf"
 
 	"audiostream/internal/capture"
 	"audiostream/internal/silence"
-	"audiostream/internal/transport"
 	"audiostream/internal/webplayer"
 )
 
 var (
-	addr      = flag.String("addr", ":19730", "TCP 监听地址 (默认 :19730)")
 	webAddr   = flag.String("web", ":8080", "Web 播放器监听地址 (设为空禁用, 默认 :8080)")
 	captureM  = flag.String("capture", "wasapi", "音频捕获后端: wasapi 或 ffmpeg (默认 wasapi)")
 	device    = flag.String("device", "", "FFmpeg 音频设备名 (留空自动检测)")
@@ -100,20 +98,36 @@ func main() {
 		}()
 	}
 
-	// ========== 初始化网络服务端 ==========
-	serverFormat := transport.AudioFormat{
-		SampleRate:    audioFormat.SampleRate,
-		Channels:      audioFormat.Channels,
-		BitsPerSample: audioFormat.BitsPerSample,
+	// ========== 注册 mDNS 服务 ==========
+	if *webAddr != "" {
+		_, webPort, _ := net.SplitHostPort(*webAddr)
+		if webPort == "" {
+			webPort = "8080"
+		}
+		hostname, _ := os.Hostname()
+		if hostname == "" {
+			hostname = "AudioStream"
+		}
+		txtRecords := []string{
+			fmt.Sprintf("sample_rate=%d", audioFormat.SampleRate),
+			fmt.Sprintf("channels=%d", audioFormat.Channels),
+			fmt.Sprintf("bits=%d", audioFormat.BitsPerSample),
+		}
+		mdnsServer, mdnsErr := zeroconf.Register(
+			hostname,
+			"_audiostream._tcp",
+			"local.",
+			portInt(webPort),
+			txtRecords,
+			nil,
+		)
+		if mdnsErr != nil {
+			log.Printf("⚠️  mDNS 注册失败: %v (不影响正常功能)", mdnsErr)
+		} else {
+			log.Printf("🔍 mDNS 服务已注册: %s._audiostream._tcp", hostname)
+			defer mdnsServer.Shutdown()
+		}
 	}
-
-	server := transport.NewServer(*addr, serverFormat)
-	if err := server.Start(); err != nil {
-		log.Fatalf("服务端启动失败: %v", err)
-	}
-	defer server.Close()
-
-	log.Printf("📡 TCP 服务端已启动，监听地址: %s", server.Addr())
 
 	// ========== 显示二维码 ==========
 	if *webAddr != "" {
@@ -139,13 +153,11 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// ========== 音频捕获通道（独立于 TCP 连接）==========
-	audioData := make(chan []byte, 128)
+	// ========== 音频捕获循环 ==========
 	done := make(chan struct{})
-	running := true
+	sentBytes := int64(0)
+	packets := int64(0)
 
-	// 启动后台捕获循环：立即开始捕获并广播到 Web 端
-	// TCP 客户端连接后也从同一通道获取数据
 	go func() {
 		buf := make([]byte, *bufSize)
 		readCount := 0
@@ -173,21 +185,17 @@ func main() {
 				continue
 			}
 
-			// 复制数据（通道和 Web 广播需要各自的副本）
+			// 复制数据（Web 广播需要副本）
 			data := make([]byte, n)
 			copy(data, buf[:n])
 
-			// 优先广播到 Web 浏览器端（不依赖 TCP 连接）
+			// 广播到 Web 浏览器端
 			if webHub != nil {
 				webHub.Broadcast(data)
 			}
 
-			// 推送到 TCP 通道（非阻塞，避免堵塞捕获循环）
-			select {
-			case audioData <- data:
-			default:
-				// 通道满了说明 TCP 客户端消费太慢或未连接，丢弃
-			}
+			sentBytes += int64(len(data))
+			packets++
 
 			// 打印心跳日志（每 300 次读取约 3 秒）
 			readCount++
@@ -199,66 +207,12 @@ func main() {
 		}
 	}()
 
-	// ========== 等待 TCP 连接（可选）==========
-	log.Println("等待 TCP 客户端连接（可选，Web 播放不依赖于此）...")
-	sender, err := server.Accept()
-	if err != nil {
-		log.Printf("TCP 客户端接受失败（Web 播放不受影响）: %v", err)
-		// 如果没有 TCP 客户端，继续运行（Web 依然在工作）
-	}
-	if sender != nil {
-		defer sender.Close()
-		log.Printf("🔗 TCP 客户端已连接: %s", sender.RemoteAddr())
-
-		if err := sender.Handshake(); err != nil {
-			log.Printf("TCP 握手失败: %v（Web 播放不受影响）", err)
-		} else {
-			log.Println("🤝 TCP 握手完成")
-		}
-	}
-
-	// ========== 传输循环 ==========
-	sentBytes := int64(0)
-	packets := int64(0)
-
-	if sender != nil {
-		log.Println("▶️  音频流传输中... (按 Ctrl+C 停止)")
-	} else {
-		log.Println("▶️  Web 播放模式已启动 (按 Ctrl+C 停止)")
-	}
+	log.Println("▶️  Web 播放模式已启动 (按 Ctrl+C 停止)")
 	fmt.Println()
 
-	for running {
-		select {
-		case <-sigCh:
-			log.Println("收到停止信号")
-			running = false
-		case data, ok := <-audioData:
-			if !ok {
-				running = false
-				break
-			}
-
-			// 发送到 TCP 客户端（如果有）
-			if sender != nil {
-				if err := sender.SendFrame(data); err != nil {
-					log.Printf("TCP 发送失败（Web 播放继续）: %v", err)
-					sender.Close()
-					sender = nil
-					log.Println("TCP 客户端已断开，继续 Web 播放模式")
-				}
-			}
-
-			sentBytes += int64(len(data))
-			packets++
-
-			// 每 5 秒打印一次状态
-			if packets%300 == 0 {
-				log.Printf("已发送: %d 包 / %.2f MB (Web 客户端: %d)",
-					packets, float64(sentBytes)/1024/1024, webHubCount(webHub))
-			}
-		}
-	}
+	// ========== 等待停止信号 ==========
+	<-sigCh
+	log.Println("收到停止信号")
 
 	// 发送剩余的累积数据
 	if webHub != nil {
@@ -277,14 +231,6 @@ func main() {
 
 	log.Printf("📊 统计: 共发送 %d 包 / %.2f MB", packets, float64(sentBytes)/1024/1024)
 	log.Println("👋 服务端已关闭")
-}
-
-// webHubCount 安全获取 Web 客户端数量
-func webHubCount(h *webplayer.Hub) int {
-	if h == nil {
-		return 0
-	}
-	return h.ClientCount()
 }
 
 // localIP 获取本机局域网 IPv4 地址，优先选择常见内网网段
@@ -331,6 +277,13 @@ func localIP() string {
 		}
 	}
 	return fallback
+}
+
+// portInt 将端口字符串转换为整数
+func portInt(port string) int {
+	var n int
+	fmt.Sscanf(port, "%d", &n)
+	return n
 }
 
 // listFFmpegDevices 列出可用的 FFmpeg 音频设备

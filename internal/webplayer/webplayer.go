@@ -33,12 +33,12 @@ type Hub struct {
 	upgrader  websocket.Upgrader
 	server    *http.Server
 	addr      string
-	accumBuf        []byte // 累积缓冲区，减少发送频率
-	accMu           sync.Mutex
-	convBuf         []byte // 格式转换缓冲区
+	accumBuf  []byte // 累积缓冲区，减少发送频率
+	accMu     sync.Mutex
+	convBuf   []byte // 格式转换缓冲区
 
-	lastNonSilentAt time.Time    // 最近一次非静音数据经过 Broadcast 的时间
-	manuallyPaused  atomic.Bool  // 客户端通过浏览器手动暂停，覆盖音频检测
+	lastNonSilentAt time.Time   // 最近一次非静音数据经过 Broadcast 的时间
+	manuallyPaused  atomic.Bool // 客户端通过浏览器手动暂停，覆盖音频检测
 }
 
 // NewHub 创建新的 Web 播放中心
@@ -52,8 +52,8 @@ func NewHub(format capture.Format) *Hub {
 	logx.Debugf("webplayer", "WebPlayer: 源格式 %s, 浏览器格式 %s", format, webFmt)
 
 	return &Hub{
-		clients: make(map[*websocket.Conn]bool),
-		format:  format,
+		clients:   make(map[*websocket.Conn]bool),
+		format:    format,
 		webFormat: webFmt,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {

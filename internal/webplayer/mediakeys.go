@@ -34,12 +34,12 @@ var (
 //   total: sizeof(INPUT) = 40 bytes
 
 type keybdInput struct {
-	wVk         uint16   // offset 0
-	wScan       uint16   // offset 2
-	dwFlags     uint32   // offset 4
-	time        uint32   // offset 8
-	_           [4]byte  // padding for dwExtraInfo 8-byte alignment
-	dwExtraInfo uintptr  // offset 16
+	wVk         uint16  // offset 0
+	wScan       uint16  // offset 2
+	dwFlags     uint32  // offset 4
+	time        uint32  // offset 8
+	_           [4]byte // padding for dwExtraInfo 8-byte alignment
+	dwExtraInfo uintptr // offset 16
 } // total: 24 bytes
 
 type input struct {

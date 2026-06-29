@@ -12,8 +12,8 @@ import (
 	"strings"
 	"syscall"
 
-	qr "github.com/skip2/go-qrcode"
 	"github.com/grandcat/zeroconf"
+	qr "github.com/skip2/go-qrcode"
 
 	"audiostream/internal/capture"
 	"audiostream/internal/logx"
@@ -22,12 +22,12 @@ import (
 )
 
 var (
-	webAddr   = flag.String("web", ":8080", "Web 播放器监听地址 (设为空禁用, 默认 :8080)")
-	captureM  = flag.String("capture", "wasapi", "音频捕获后端: wasapi 或 ffmpeg (默认 wasapi)")
-	device    = flag.String("device", "", "FFmpeg 音频设备名 (留空自动检测)")
-	listDev   = flag.Bool("list-devices", false, "列出 FFmpeg 可用音频设备后退出")
-	bufSize   = flag.Int("buf", 65536, "音频缓冲区大小 (默认 65536)")
-	showLog   = flag.String("log", "", "显示详细调试日志 (可选: all,wasapi,ffmpeg,webplayer,media,capture,逗号组合)")
+	webAddr  = flag.String("web", ":8080", "Web 播放器监听地址 (设为空禁用, 默认 :8080)")
+	captureM = flag.String("capture", "wasapi", "音频捕获后端: wasapi 或 ffmpeg (默认 wasapi)")
+	device   = flag.String("device", "", "FFmpeg 音频设备名 (留空自动检测)")
+	listDev  = flag.Bool("list-devices", false, "列出 FFmpeg 可用音频设备后退出")
+	bufSize  = flag.Int("buf", 65536, "音频缓冲区大小 (默认 65536)")
+	showLog  = flag.String("log", "", "显示详细调试日志 (可选: all,wasapi,ffmpeg,webplayer,media,capture,逗号组合)")
 )
 
 func main() {
@@ -63,7 +63,12 @@ func main() {
 		}
 		logx.Debugf("ffmpeg", "FFmpeg 捕获模式, 设备参数: %q", *device)
 		log.Printf("正在初始化 FFmpeg 音频捕获 (设备: %s)...",
-			func() string { if *device == "" { return "自动检测" }; return *device }())
+			func() string {
+				if *device == "" {
+					return "自动检测"
+				}
+				return *device
+			}())
 		cap, err = capture.NewFFmpeg(*device)
 		if err != nil {
 			log.Fatalf("FFmpeg 音频捕获初始化失败: %v", err)

@@ -5,7 +5,7 @@ import (
 )
 
 const (
-	thresholdInt16  = 100
+	thresholdInt16   = 100
 	thresholdFloat32 = 0.001
 )
 

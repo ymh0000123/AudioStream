@@ -17,18 +17,18 @@ import (
 
 // ffmpegCapture 使用 FFmpeg 子进程捕获系统音频
 type ffmpegCapture struct {
-	cmd       *exec.Cmd
-	stdout    io.ReadCloser
-	stderr    bytes.Buffer
-	format    Format
-	devName   string
-	started   bool
-	closed    bool
-	readBuf   []byte
-	readPos   int
-	readSize  int
-	mu        sync.Mutex
-	doneCh    chan struct{}
+	cmd      *exec.Cmd
+	stdout   io.ReadCloser
+	stderr   bytes.Buffer
+	format   Format
+	devName  string
+	started  bool
+	closed   bool
+	readBuf  []byte
+	readPos  int
+	readSize int
+	mu       sync.Mutex
+	doneCh   chan struct{}
 }
 
 // ListFFmpegDevices 列出 FFmpeg 可用的音频输入设备
@@ -284,4 +284,3 @@ func (fc *ffmpegCapture) Close() error {
 func (fc *ffmpegCapture) DeviceName() string {
 	return fc.devName
 }
-

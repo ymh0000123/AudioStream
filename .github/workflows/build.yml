@@ -1,0 +1,77 @@
+name: build
+
+# 任意推送与 PR 都触发构建校验。
+# 本项目核心依赖 Windows API（WASAPI / SendInput）与 C++/WinRT 编译的 smtc.dll，
+# 仅在 windows 上可编译，因此 CI 固定运行在 windows-latest。
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify go.sum is in sync
+        run: go mod verify
+
+      - name: Go fmt check
+        run: |
+          # go fmt 只会输出需要格式化的文件名；若有输出即说明存在未格式化代码，失败。
+          $diff = go fmt ./...
+          if ($diff) { Write-Error "以下文件未 go fmt: $diff"; exit 1 }
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Build smtc.dll (C++/WinRT)
+        shell: cmd
+        run: |
+          :: 通过 vswhere 定位最新 VS 并加载 amd64 编译环境，再调用 nmake 构建 smtc.dll
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set VSPATH=%%i
+          if not defined VSPATH (
+            echo ❌ 未找到 Visual Studio Build Tools 1>&2
+            exit /b 1
+          )
+          call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" amd64
+          pushd dll
+          nmake /f Makefile
+          popd
+          if not exist dll\smtc.dll (
+            echo ❌ smtc.dll 构建失败 1>&2
+            exit /b 1
+          )
+          :: 复制到 webplayer 目录供 go:embed 嵌入
+          copy /Y dll\smtc.dll internal\webplayer\smtc_embed.dll
+          echo ✅ smtc.dll 构建成功
+
+      - name: Build server.exe
+        env:
+          CGO_ENABLED: 1
+        run: go build -ldflags="-s -w" -o server.exe ./cmd/server
+
+      - name: Test
+        run: go test ./...
+        # 测试涉及 Windows SMTC / 音频会话，CI 环境通常无媒体会话，
+        # 冒烟测试会返回 nil（合法），不视为失败。但编译与运行本身必须通过。
+
+      - name: Upload server.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-windows
+          path: server.exe
+          if-no-files-found: error

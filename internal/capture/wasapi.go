@@ -11,6 +11,8 @@ import (
 
 	"github.com/go-ole/go-ole"
 	"github.com/moutend/go-wca/pkg/wca"
+
+	"audiostream/internal/logx"
 )
 
 // wasapiLoopback 使用 WASAPI Loopback 捕获系统音频输出
@@ -38,6 +40,7 @@ func newLoopback() (Capture, error) {
 		runtime.UnlockOSThread()
 		return nil, fmt.Errorf("COM 初始化失败: %w", err)
 	}
+	logx.Debugf("wasapi", "WASAPI: COM 初始化成功")
 
 	wl := &wasapiLoopback{}
 
@@ -65,6 +68,7 @@ func newLoopback() (Capture, error) {
 		runtime.UnlockOSThread()
 		return nil, fmt.Errorf("获取默认音频设备失败: %w", err)
 	}
+	logx.Debugf("wasapi", "WASAPI: 默认音频渲染设备已获取")
 
 	// 3. 激活 IAudioClient
 	if err := wl.audioDevice.Activate(
@@ -98,6 +102,8 @@ func newLoopback() (Capture, error) {
 	}
 
 	wl.blockAlign = uint32(wl.mixFormat.NBlockAlign)
+	logx.Debugf("wasapi", "WASAPI: 混音格式 SampleRate=%d, Channels=%d, BitsPerSample=%d, BlockAlign=%d",
+		wl.format.SampleRate, wl.format.Channels, wl.format.BitsPerSample, wl.blockAlign)
 
 	// 5. 初始化音频客户端（Loopback 模式）
 	// 使用 REFERENCE_TIME 格式：100 纳秒为单位
@@ -110,6 +116,7 @@ func newLoopback() (Capture, error) {
 		wl.mixFormat,
 		nil, // 音频会话 GUID
 	); err != nil {
+		logx.Debugf("wasapi", "WASAPI: Initialize 首次失败: %v, 尝试 AUTOCONVERTPCM", err)
 		// 尝试带 AUTOCONVERTPCM 标志重试
 		err2 := wl.audioClient.Initialize(
 			wca.AUDCLNT_SHAREMODE_SHARED,
@@ -138,6 +145,7 @@ func newLoopback() (Capture, error) {
 		runtime.UnlockOSThread()
 		return nil, fmt.Errorf("获取缓冲区大小失败: %w", err)
 	}
+	logx.Debugf("wasapi", "WASAPI: 缓冲区大小 %d 帧", wl.bufferFrames)
 
 	return wl, nil
 }
@@ -173,6 +181,7 @@ func (wl *wasapiLoopback) Start() error {
 	}
 
 	wl.started = true
+	logx.Debugf("wasapi", "WASAPI: 捕获已启动")
 	return nil
 }
 
@@ -221,6 +230,7 @@ func (wl *wasapiLoopback) Read(data []byte) (int, error) {
 	// AUDCLNT_BUFFERFLAGS_SILENT = 0x1，WASAPI 标记缓冲区为静音
 	const AUDCLNT_BUFFERFLAGS_SILENT = 0x1
 	if flags&AUDCLNT_BUFFERFLAGS_SILENT != 0 {
+		logx.Debugf("wasapi", "WASAPI: 静音缓冲区标志 (flags=0x%X)", flags)
 		wl.captureCli.ReleaseBuffer(framesRead)
 		return 0, nil
 	}
@@ -256,6 +266,7 @@ func (wl *wasapiLoopback) Stop() error {
 		return nil
 	}
 
+	logx.Debugf("wasapi", "WASAPI: 停止捕获")
 	if wl.audioClient != nil {
 		wl.audioClient.Stop()
 		wl.audioClient.Reset()
@@ -274,6 +285,7 @@ func (wl *wasapiLoopback) Close() error {
 	}
 	wl.closed = true
 	wl.started = false
+	logx.Debugf("wasapi", "WASAPI: 释放 COM 资源")
 
 	// 按顺序释放 COM 资源
 	if wl.captureCli != nil {

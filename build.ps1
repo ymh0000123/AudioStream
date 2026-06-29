@@ -6,7 +6,6 @@ param(
     [string]$OutputDir = "."
 )
 
-# 设置颜色
 $Green = "Green"
 $Red = "Red"
 $Yellow = "Yellow"
@@ -25,18 +24,63 @@ if (-not $?) {
 }
 Write-Host "✅ Go: $goVersion" -ForegroundColor $Green
 
-# 启用 CGO（WASAPI 捕获需要）
 $env:CGO_ENABLED = "1"
 
 # 清理
-if ($Clean -and (Test-Path "$OutputDir\server.exe")) {
-    Remove-Item "$OutputDir\server.exe" -ErrorAction SilentlyContinue
-    Write-Host "已清理旧的 server.exe" -ForegroundColor $Yellow
+if ($Clean) {
+    @("$OutputDir\server.exe", "$OutputDir\smtc.dll", "internal\webplayer\smtc_embed.dll") | ForEach-Object {
+        if (Test-Path $_) { Remove-Item $_ -ErrorAction SilentlyContinue; Write-Host "已清理 $_" -ForegroundColor $Yellow }
+    }
 }
 
+# 构建 smtc.dll (必须先于 Go 构建，因为 go:embed)
+Write-Host ""
+Write-Host "📦 正在构建 smtc.dll..." -ForegroundColor $Yellow
+
+# 查找 VS Build Tools 并设置环境
+$vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$vcvars = $null
+if (Test-Path $vsWhere) {
+    $vsPath = & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+    if ($vsPath) {
+        $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
+    }
+}
+if (-not $vcvars -or -not (Test-Path $vcvars)) {
+    # 尝试默认路径
+    $candidates = @(
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat",
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat",
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat",
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { $vcvars = $c; break }
+    }
+}
+
+$nmakeOk = $false
+if ($vcvars) {
+    Push-Location dll
+    cmd /c "call `"$vcvars`" amd64 >nul 2>&1 && nmake /f Makefile" 2>&1
+    $nmakeOk = $?
+    Pop-Location
+} else {
+    Write-Host "⚠️  未找到 Visual Studio Build Tools，跳过 DLL 构建" -ForegroundColor $Yellow
+}
+if (-not $nmakeOk -or -not (Test-Path "dll\smtc.dll")) {
+    Write-Host "❌ smtc.dll 构建失败" -ForegroundColor $Red
+    Write-Host "   SMTC 状态查询将降级为不可用" -ForegroundColor $Yellow
+} else {
+    # 复制到 webplayer 目录供 go:embed 嵌入
+    Copy-Item "dll\smtc.dll" "internal\webplayer\smtc_embed.dll" -Force
+    Write-Host "✅ smtc.dll 构建成功" -ForegroundColor $Green
+}
+
+# 构建 server.exe
 Write-Host ""
 Write-Host "📦 正在构建 server.exe..." -ForegroundColor $Yellow
-go build -ldflags="-s -w" -o "$OutputDir\server.exe" -v ./cmd/server 2>&1
+go build -ldflags="-s -w" -o "$OutputDir\server.exe" ./cmd/server 2>&1
 if (-not $?) {
     Write-Host "❌ server.exe 构建失败" -ForegroundColor $Red
     exit 1
@@ -51,6 +95,3 @@ Write-Host "  server.exe: $([math]::Round($serverSize/1KB)) KB" -ForegroundColor
 
 Write-Host ""
 Write-Host "✅ 构建完成！" -ForegroundColor $Green
-Write-Host ""
-Write-Host "使用方法:" -ForegroundColor $Yellow
-Write-Host "  发送端 (音频源电脑): server.exe" -ForegroundColor $Yellow

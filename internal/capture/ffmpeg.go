@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"audiostream/internal/logx"
 )
 
 // ffmpegCapture 使用 FFmpeg 子进程捕获系统音频
@@ -134,10 +136,12 @@ func NewFFmpeg(deviceName string) (Capture, error) {
 		if err != nil {
 			return nil, fmt.Errorf("FFmpeg 自动检测设备失败: %w", err)
 		}
+		logx.Debugf("ffmpeg", "FFmpeg: 自动检测到 %d 个设备", len(devices))
 		deviceName = findStereoMix(devices)
 		if deviceName == "" {
 			return nil, fmt.Errorf("未找到可用的音频设备，可用设备: %s", strings.Join(devices, ", "))
 		}
+		logx.Debugf("ffmpeg", "FFmpeg: 自动选择设备 %q", deviceName)
 	}
 
 	// 构建 FFmpeg 命令
@@ -156,6 +160,7 @@ func NewFFmpeg(deviceName string) (Capture, error) {
 
 	// 尝试用 PulseAudio
 	cmd := exec.Command("ffmpeg", args...)
+	logx.Debugf("ffmpeg", "FFmpeg: 命令行 ffmpeg %s", strings.Join(args, " "))
 
 	return &ffmpegCapture{
 		format: Format{
@@ -197,6 +202,7 @@ func (fc *ffmpegCapture) Start() error {
 
 	fc.stdout = stdout
 	fc.started = true
+	logx.Debugf("ffmpeg", "FFmpeg: 子进程已启动 (PID: %d)", fc.cmd.Process.Pid)
 
 	// 检查 FFmpeg 是否立即退出
 	done := make(chan struct{}, 1)
@@ -211,10 +217,12 @@ func (fc *ffmpegCapture) Start() error {
 	case <-done:
 		stderrStr := fc.stderr.String()
 		if stderrStr != "" {
+			logx.Debugf("ffmpeg", "FFmpeg: stderr 输出: %s", stderrStr)
 			return fmt.Errorf("FFmpeg 启动失败: %s", stderrStr)
 		}
 		return fmt.Errorf("FFmpeg 启动后立即退出")
 	default:
+		logx.Debugf("ffmpeg", "FFmpeg: 启动检查通过")
 	}
 
 	return nil
@@ -246,6 +254,7 @@ func (fc *ffmpegCapture) Stop() error {
 
 	// 终止 FFmpeg 进程
 	if fc.cmd != nil && fc.cmd.Process != nil {
+		logx.Debugf("ffmpeg", "FFmpeg: 终止子进程 (PID: %d)", fc.cmd.Process.Pid)
 		fc.cmd.Process.Kill()
 	}
 

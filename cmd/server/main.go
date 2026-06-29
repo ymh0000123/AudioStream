@@ -16,6 +16,7 @@ import (
 	"github.com/grandcat/zeroconf"
 
 	"audiostream/internal/capture"
+	"audiostream/internal/logx"
 	"audiostream/internal/silence"
 	"audiostream/internal/webplayer"
 )
@@ -26,10 +27,13 @@ var (
 	device    = flag.String("device", "", "FFmpeg 音频设备名 (留空自动检测)")
 	listDev   = flag.Bool("list-devices", false, "列出 FFmpeg 可用音频设备后退出")
 	bufSize   = flag.Int("buf", 65536, "音频缓冲区大小 (默认 65536)")
+	showLog   = flag.String("log", "", "显示详细调试日志 (可选: all,wasapi,ffmpeg,webplayer,media,capture,逗号组合)")
 )
 
 func main() {
 	flag.Parse()
+
+	logx.Init(*showLog)
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmsgprefix)
 	log.SetPrefix("[AudioStream Server] ")
@@ -57,6 +61,7 @@ func main() {
 		if !capture.FFmpegAvailable() {
 			log.Fatalf("❌ %v", capture.ErrFFmpegNotFound)
 		}
+		logx.Debugf("ffmpeg", "FFmpeg 捕获模式, 设备参数: %q", *device)
 		log.Printf("正在初始化 FFmpeg 音频捕获 (设备: %s)...",
 			func() string { if *device == "" { return "自动检测" }; return *device }())
 		cap, err = capture.NewFFmpeg(*device)
@@ -80,6 +85,8 @@ func main() {
 	// 获取音频格式
 	audioFormat := cap.Format()
 	log.Printf("音频格式: %s", audioFormat)
+	logx.Debugf("capture", "音频格式详情: SampleRate=%d, Channels=%d, BitsPerSample=%d, BytesPerFrame=%d",
+		audioFormat.SampleRate, audioFormat.Channels, audioFormat.BitsPerSample, audioFormat.BytesPerFrame())
 
 	// 启动捕获
 	if err := cap.Start(); err != nil {
@@ -91,6 +98,7 @@ func main() {
 	var webHub *webplayer.Hub
 	if *webAddr != "" {
 		webHub = webplayer.NewHub(audioFormat)
+		webHub.StartMediaStatePoller()
 		go func() {
 			if err := webHub.StartHTTPServer(*webAddr); err != nil {
 				log.Printf("[WebPlayer] ❌ HTTP 服务启动失败: %v", err)
@@ -101,6 +109,7 @@ func main() {
 	// ========== 注册 mDNS 服务 ==========
 	if *webAddr != "" {
 		_, webPort, _ := net.SplitHostPort(*webAddr)
+		logx.Debugf("webplayer", "mDNS 注册准备: webPort=%s, hostname=%s", webPort, func() string { h, _ := os.Hostname(); return h }())
 		if webPort == "" {
 			webPort = "8080"
 		}
@@ -176,12 +185,16 @@ func main() {
 			}
 			if n == 0 {
 				silentCount++
+				logx.Debugf("capture", "Read 返回 0 字节 (静音)")
 				continue
 			}
+
+			logx.Debugf("capture", "Read: %d 字节", n)
 
 			// 静音检测：幅度低于阈值时跳过发送
 			if silence.IsSilent(buf[:n], audioFormat.BitsPerSample) {
 				silentCount++
+				logx.Debugf("capture", "静音跳过: %d 字节", n)
 				continue
 			}
 

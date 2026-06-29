@@ -13,6 +13,14 @@ server_test.log
 .deepseek/
 .kagent/
 .mimocode/
+.nezha/
 
 # Go
 vendor/
+
+# DLL build artifacts (generated from dll/ via nmake)
+*.exp
+*.lib
+*.obj
+*.pdb
+dll/smtc.dll

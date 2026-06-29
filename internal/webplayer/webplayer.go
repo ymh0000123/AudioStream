@@ -10,11 +10,13 @@ import (
 	"math"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"audiostream/internal/capture"
+	"audiostream/internal/logx"
 	"audiostream/internal/silence"
 )
 
@@ -25,14 +27,18 @@ var pageContent embed.FS
 type Hub struct {
 	clients   map[*websocket.Conn]bool
 	mu        sync.RWMutex
+	writeMu   sync.Mutex // 序列化所有 WebSocket 写操作，防止并发写导致消息损坏
 	format    capture.Format
 	webFormat capture.Format // 发送给浏览器的格式（始终为 16-bit）
 	upgrader  websocket.Upgrader
 	server    *http.Server
 	addr      string
-	accumBuf  []byte // 累积缓冲区，减少发送频率
-	accMu     sync.Mutex
-	convBuf   []byte // 格式转换缓冲区
+	accumBuf        []byte // 累积缓冲区，减少发送频率
+	accMu           sync.Mutex
+	convBuf         []byte // 格式转换缓冲区
+
+	lastNonSilentAt time.Time    // 最近一次非静音数据经过 Broadcast 的时间
+	manuallyPaused  atomic.Bool  // 客户端通过浏览器手动暂停，覆盖音频检测
 }
 
 // NewHub 创建新的 Web 播放中心
@@ -43,6 +49,7 @@ func NewHub(format capture.Format) *Hub {
 		Channels:      format.Channels,
 		BitsPerSample: 16,
 	}
+	logx.Debugf("webplayer", "WebPlayer: 源格式 %s, 浏览器格式 %s", format, webFmt)
 
 	return &Hub{
 		clients: make(map[*websocket.Conn]bool),
@@ -73,8 +80,11 @@ func (h *Hub) Broadcast(data []byte) {
 		return
 	}
 
+	h.lastNonSilentAt = time.Now()
+
 	// 如果源数据是 32-bit float，转换为 16-bit int
 	if h.format.BitsPerSample == 32 {
+		logx.Debugf("webplayer", "WebPlayer: 32-bit → 16-bit 转换 %d 字节", len(data))
 		data = h.convert32bitTo16bit(data)
 	}
 
@@ -86,6 +96,7 @@ func (h *Hub) Broadcast(data []byte) {
 
 	// 计算目标缓冲区大小：50ms 的 16-bit 音频数据
 	targetSize := h.webFormat.SampleRate * h.webFormat.BytesPerFrame() / 20 // 50ms
+	logx.Debugf("webplayer", "WebPlayer: 累积缓冲 %d/%d 字节 (目标 %d)", accLen, cap(h.accumBuf), targetSize)
 	if accLen < targetSize {
 		return
 	}
@@ -97,13 +108,16 @@ func (h *Hub) Broadcast(data []byte) {
 	h.accumBuf = h.accumBuf[:0]
 	h.accMu.Unlock()
 
-	// 广播给所有客户端
+	// 广播给所有客户端（序列化写入，防止并发写损坏消息）
+	h.writeMu.Lock()
+	logx.Debugf("webplayer", "WebPlayer: 广播 %d 字节到 %d 个客户端", len(sendData), len(h.clients))
 	for conn := range h.clients {
 		if err := conn.WriteMessage(websocket.BinaryMessage, sendData); err != nil {
 			log.Printf("[WebPlayer] ⚠️  WebSocket 发送失败: %v", err)
 			go h.removeClient(conn)
 		}
 	}
+	h.writeMu.Unlock()
 }
 
 // convert32bitTo16bit 将 32-bit float PCM 转换为 16-bit int PCM
@@ -141,6 +155,11 @@ func (h *Hub) convert32bitTo16bit(data []byte) []byte {
 	return h.convBuf
 }
 
+// IsStreamingAudio 返回 AudioStream 当前是否正在传输非静音音频
+func (h *Hub) IsStreamingAudio() bool {
+	return time.Since(h.lastNonSilentAt) < 5*time.Second
+}
+
 // Flush 强制刷新剩余的累积数据
 func (h *Hub) Flush() {
 	h.accMu.Lock()
@@ -152,8 +171,12 @@ func (h *Hub) Flush() {
 		return
 	}
 
+	logx.Debugf("webplayer", "WebPlayer: Flush %d 字节到 %d 个客户端", len(data), h.ClientCount())
+
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
 	for conn := range h.clients {
 		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 			go h.removeClient(conn)
@@ -192,10 +215,14 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		`{"type":"format","sample_rate":%d,"channels":%d,"bits_per_sample":16}`,
 		h.webFormat.SampleRate, h.webFormat.Channels,
 	)
+	logx.Debugf("webplayer", "WebPlayer: 发送格式给客户端: %s", fmtJSON)
+	h.writeMu.Lock()
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(fmtJSON)); err != nil {
+		h.writeMu.Unlock()
 		conn.Close()
 		return
 	}
+	h.writeMu.Unlock()
 
 	// 注册客户端
 	h.mu.Lock()
@@ -204,6 +231,9 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 
 	log.Printf("[WebPlayer] 🖥️  Web 客户端已连接 (当前共 %d 个)", count)
+
+	// 立即推送当前播放状态，避免客户端等待轮询
+	h.BroadcastState(h.queryCombinedState())
 
 	// 保持读循环以检测断开
 	defer func() {
@@ -221,9 +251,52 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	})
 
 	for {
-		_, _, err := conn.ReadMessage()
+		msgType, msg, err := conn.ReadMessage()
 		if err != nil {
 			break
+		}
+		if msgType == websocket.TextMessage {
+			if cmd := ParseCommand(msg); cmd != nil {
+				logx.Debugf("webplayer", "WebPlayer: 收到命令 action=%s, position=%d, volume=%d", cmd.Action, cmd.Position, cmd.Volume)
+				if cmd.Action == "get_state" {
+					// 客户端主动请求状态，立即查询并广播
+					h.BroadcastState(h.queryCombinedState())
+				} else if cmd.Action == "play_pause" {
+					// play_pause 是切换操作：在异步执行之前主动管理暂停状态。
+					// 优先用 SMTC 权威状态判断当前是否播放，避免 5s 音频窗口误判。
+					s := querySMTCState()
+					if s != nil {
+						if s.Playing {
+							h.manuallyPaused.Store(true)
+						} else {
+							h.manuallyPaused.Store(false)
+						}
+					} else if h.IsStreamingAudio() {
+						// 无 SMTC 会话（非媒体音频源）：当前正在播放 → 用户意图暂停
+						h.manuallyPaused.Store(true)
+					} else if h.manuallyPaused.Load() {
+						// 当前是手动暂停 → 用户意图恢复 → 清除标记
+						h.manuallyPaused.Store(false)
+					}
+					// 将 lastNonSilentAt 置为过去，使 IsStreamingAudio() 立即返回 false
+					h.lastNonSilentAt = time.Now().Add(-10 * time.Second)
+					ExecuteMediaCommand(cmd)
+					// SendInput 是异步的，过早查询会拿到旧状态。
+					// 异步延迟查询：不阻塞读循环，给播放器足够时间响应。
+					go func() {
+						time.Sleep(800 * time.Millisecond)
+						h.BroadcastState(h.queryCombinedState())
+					}()
+				} else {
+					ExecuteMediaCommand(cmd)
+					// SendInput 是异步的，过早查询会拿到旧状态。
+					// 异步延迟查询：不阻塞读循环，给播放器足够时间响应。
+					go func() {
+						time.Sleep(800 * time.Millisecond)
+						h.BroadcastState(h.queryCombinedState())
+					}()
+				}
+			}
 		}
 	}
 }
@@ -273,7 +346,6 @@ func (h *Hub) StartHTTPServer(addr string) error {
 
 // Stop 关闭 HTTP 服务器
 func (h *Hub) Stop() error {
-	// 关闭所有 WebSocket 客户端
 	h.mu.Lock()
 	for conn := range h.clients {
 		conn.Close()

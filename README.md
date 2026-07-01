@@ -1,198 +1,145 @@
-# AudioStream - 跨平台电脑音频传输工具
+# AudioStream
 
-将一台电脑的系统音频输出，通过网络实时传输到另一台电脑播放。
-
-## 功能特点
-
-- 🎵 **实时传输**：低延迟传输电脑系统音频（扬声器输出）
-- 🔌 **即插即用**：无需配置，一条命令启动服务端，一条命令启动客户端
-- 🪟 **Windows 原生支持**：使用 WASAPI Loopback 捕获系统音频
-- 📦 **纯 Go 实现**：编译为单个可执行文件，无需外部依赖
-- 🔊 **高音质**：原生 48kHz 16bit 立体声 PCM 传输
+实时捕获 Windows 系统音频，通过 WebSocket 推送到浏览器播放。无需安装客户端，手机扫码即用。
 
 ## 工作原理
 
 ```
-┌────────────────────┐          TCP 连接          ┌────────────────────┐
-│  发送端 (Server)    │◄─────────────────────────►│  接收端 (Client)    │
-│                    │          :19730            │                    │
-│  ┌──────────────┐  │                           │  ┌──────────────┐  │
-│  │ WASAPI       │  │   PCM 音频流               │  │ oto 音频播放 │  │
-│  │ Loopback 捕获 │──┼──────────────────────────▶│  │              │  │
-│  └──────────────┘  │   握手 → 格式协商 → 传输    │  └──────────────┘  │
-│                    │                           │                    │
-└────────────────────┘                           └────────────────────┘
+┌─── Server (Windows) ──────────────────────────┐
+│                                               │
+│  WASAPI / FFmpeg 捕获                          │
+│       │                                       │
+│       ▼                                       │
+│  静音检测 → 32→16bit 转换 → WebSocket 广播     │
+│                                    │          │
+│                          HTTP :8080           │
+└────────────────────────────────────┼──────────┘
+                                     │
+            ┌────────────────────────┼──────────────┐
+            │        浏览器 (任意设备)                │
+            │  AudioContext + WebSocket 播放         │
+            │  媒体控制 / 码率切换 / 播放状态显示     │
+            └───────────────────────────────────────┘
 ```
 
-## 使用场景
+## 功能
 
-- 🎮 将游戏电脑的音频传输到另一台电脑/手机
-- 🎬 将远程会议音频转发到更好的音响设备
-- 🖥️ 将主机音频传输到客户端电脑
+- WASAPI Loopback 捕获系统音频（免驱动，原生低延迟）
+- FFmpeg 后端（DirectShow / WASAPI / PulseAudio）
+- 浏览器 Web 播放器，无需安装任何客户端
+- 二维码扫码访问，mDNS 自动发现
+- 32-bit float → 16-bit int 实时转换
+- 多码率适配（128 ~ 1024 kbps）
+- 媒体键远程控制（播放/暂停/上一曲/下一曲）
+- SMTC 集成，显示歌曲标题、进度、专辑信息
+- 静音检测，跳过无声片段减少带宽
+
+## 快速开始
+
+### 编译
+
+需要 Go 1.24+ 和 CGO 环境（MinGW-w64）。
+
+```powershell
+# 方式一：使用构建脚本（推荐）
+.\build.ps1
+
+# 方式二：手动编译
+$env:CGO_ENABLED='1'
+go build -ldflags="-s -w" -o server.exe ./cmd/server
+```
+
+> `smtc.dll` 用于 SMTC 媒体状态查询。如果未安装 Visual Studio Build Tools，构建脚本会跳过 DLL 编译，SMTC 功能降级为不可用，不影响音频传输。
+
+### 运行
+
+```powershell
+# 启动服务端（默认 WASAPI + Web 播放器 :8080）
+.\server.exe
+
+# 使用 FFmpeg 后端
+.\server.exe -capture ffmpeg
+
+# 指定 FFmpeg 设备
+.\server.exe -capture ffmpeg -device "立体声混音 (Realtek High Definition Audio)"
+
+# 禁用 Web 播放器
+.\server.exe -web ""
+
+# 列出 FFmpeg 可用设备
+.\server.exe -list-devices
+```
+
+启动后终端会显示二维码，用手机扫码即可在浏览器中播放系统音频。
+
+## 命令行参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-web` | `:8080` | Web 播放器监听地址（空字符串禁用） |
+| `-capture` | `wasapi` | 音频捕获后端：`wasapi` 或 `ffmpeg` |
+| `-device` | `""` | FFmpeg 音频设备名（留空自动检测） |
+| `-list-devices` | `false` | 列出 FFmpeg 可用音频设备并退出 |
+| `-buf` | `65536` | 音频缓冲区大小（字节） |
+| `-log` | `""` | 调试日志类别，逗号分隔：`wasapi,ffmpeg,webplayer,media,capture` 或 `all` |
+
+## 项目结构
+
+```
+cmd/server/
+  main.go                  # 入口：标志解析、捕获初始化、Web 服务、信号处理
+
+internal/capture/
+  capture.go               # Capture 接口定义
+  wasapi.go                # Windows WASAPI Loopback 实现
+  ffmpeg.go                # FFmpeg 子进程捕获
+  capture_stub.go          # 非 Windows 桩实现
+
+internal/webplayer/
+  webplayer.go             # WebSocket Hub：广播、格式转换、HTTP 服务
+  player.html              # 嵌入式 Web UI（embed.FS）
+  command.go               # 媒体命令解析
+  mediakeys.go             # Windows 媒体键模拟（SendInput）
+  mediastate.go            # 播放状态轮询（SMTC + 音频能量检测）
+  mediastate_dll.go        # SMTC C++/WinRT DLL 查询
+  mediastate_stub.go       # 非 Windows 桩实现
+  mediaseek.go             # 进度条拖动
+  audiosession.go          # Windows 音频会话查询
+
+internal/silence/
+  silence.go               # 静音检测（int16 / float32）
+
+internal/logx/
+  logx.go                  # 分类调试日志
+
+build.ps1                  # Windows 构建脚本
+```
+
+## WebSocket 协议
+
+连接 `/ws` 端点后：
+
+1. 服务端发送 JSON 格式信息：`{"type":"format","sample_rate":48000,"channels":2,"bits_per_sample":16}`
+2. 服务端推送二进制 16-bit PCM 音频帧（约 50ms 一批）
+3. 服务端定期广播播放状态：`{"type":"state","playing":true,"title":"...","position":...,"duration":...}`
+4. 客户端可发送命令：
+   - `play_pause` — 播放/暂停
+   - `previous` / `next` — 上一曲/下一曲
+   - `seek_to` — 跳转到指定位置（毫秒）
+   - `set_volume` — 设置音量
+   - `set_bitrate` — 切换码率（128/256/512/1024 kbps）
+   - `get_state` — 请求当前播放状态
 
 ## 系统要求
 
 | 组件 | 要求 |
 |------|------|
-| **发送端** | Windows 10/11（需要 WASAPI 支持） |
-| **接收端** | Windows / macOS / Linux（使用 oto 播放） |
-| **网络** | 局域网或低延迟网络连接 |
-| **Go 版本** | 1.21+（仅编译时需要） |
-
-> **注意**：音频捕获功能目前仅在 Windows 上支持（WASAPI Loopback）。
-> 接收端（播放）跨平台支持 Windows、macOS、Linux。
-
-## 快速开始
-
-### 方式一：下载预编译版本
-
-从 [Releases](../../releases) 页面下载对应平台的压缩包，解压后直接运行。
-
-### 方式二：从源码编译
-
-```bash
-# 确保已安装 Go 1.21+
-go version
-
-# 克隆项目
-git clone https://github.com/yourusername/audiostream.git
-cd audiostream
-
-# 编译
-go build -o server.exe ./cmd/server
-go build -o client.exe ./cmd/client
-
-# 或者使用构建脚本
-.\build.ps1
-```
-
-### 使用教程
-
-#### 1️⃣ 在音频源电脑上启动发送端（Server）
-
-```bash
-# 默认监听 :19730
-server.exe
-
-# 指定监听地址和端口
-server.exe -addr :19731
-```
-
-成功启动后，终端会显示：
-```
-[AudioStream Server] 正在初始化 WASAPI Loopback 音频捕获...
-[AudioStream Server] 音频格式: 48000Hz 2ch 16bit PCM
-[AudioStream Server] ✅ 音频捕获已启动
-[AudioStream Server] 📡 服务端已启动，监听地址: 0.0.0.0:19730
-[AudioStream Server] 等待客户端连接...
-```
-
-> 💡 **提示**：如果遇到防火墙提示，请允许程序通过防火墙。
-
-#### 2️⃣ 在接收端电脑上启动接收端（Client）
-
-```bash
-# 连接服务端
-client.exe -addr 192.168.1.100:19730
-
-# 如果不指定地址，默认连接 127.0.0.1:19730（本机测试）
-client.exe
-```
-
-成功连接后，终端会显示：
-```
-[AudioStream Client] 正在连接服务端 192.168.1.100:19730 ...
-[AudioStream Client] ✅ 已连接服务端
-[AudioStream Client] 接收到音频格式: 48000Hz 2ch 16bit
-[AudioStream Client] ✅ 音频播放器已启动
-[AudioStream Client] ▶️  正在接收音频流... (按 Ctrl+C 停止)
-```
-
-#### 3️⃣ 停止传输
-
-在任意端按 `Ctrl + C` 即可停止。
-
-## 命令行参数
-
-### Server（发送端）
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `-addr` | `:19730` | 监听地址和端口 |
-| `-buf` | `65536` | 音频缓冲区大小（字节） |
-
-### Client（接收端）
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `-addr` | `127.0.0.1:19730` | 服务端地址和端口 |
-
-## 项目结构
-
-```
-audiostream/
-├── cmd/
-│   ├── server/            # 发送端入口
-│   │   └── main.go
-│   └── client/            # 接收端入口
-│       └── main.go
-├── internal/
-│   ├── capture/           # 音频捕获模块
-│   │   ├── capture.go     # 接口定义
-│   │   ├── wasapi.go      # Windows WASAPI 实现
-│   │   └── capture_stub.go # 非 Windows 桩实现
-│   ├── player/            # 音频播放模块
-│   │   └── player.go
-│   └── transport/         # 网络传输模块
-│       └── transport.go
-├── go.mod
-├── go.sum
-├── build.ps1              # 构建脚本
-└── README.md
-```
-
-## 技术细节
-
-### 音频格式
-- **采样率**：取决于系统混音器设置（通常 48000Hz）
-- **位深**：16 位
-- **通道**：立体声（2 通道）
-- **编码**：原始 PCM（未压缩）
-- **传输协议**：TCP，先发送 4 字节长度前缀，后跟 PCM 数据
-
-### 带宽估算
-- 48000Hz × 2ch × 16bit = 约 1.5 Mbps
-- 局域网环境完全足够
-
-## 常见问题
-
-### Q: 客户端无法连接到服务端？
-**A**: 请检查：
-1. 服务端防火墙是否放行端口
-2. 两台电脑是否在同一网络
-3. 地址和端口是否输入正确
-
-### Q: 音频有卡顿或噪音？
-**A**: 尝试：
-1. 使用有线网络替代 Wi-Fi
-2. 增加缓冲区大小：`server.exe -buf 131072`
-3. 检查网络延迟
-
-### Q: 支持 macOS 或 Linux 作为发送端吗？
-**A**: 目前音频捕获仅在 Windows 上实现（WASAPI Loopback）。
-macOS 和 Linux 的音频捕获支持正在计划中。
-
-### Q: 支持多客户端同时接收吗？
-**A**: 当前版本仅支持一对一的传输。多播功能在计划中。
-
-## 开发计划
-
-- [ ] macOS CoreAudio 音频捕获支持
-- [ ] Linux PulseAudio 音频捕获支持
-- [ ] Opus 音频压缩编码
-- [ ] 多客户端同时传输
-- [ ] WebRTC 支持
-- [ ] 图形界面
+| 操作系统 | Windows 10/11（音频捕获） |
+| 浏览器 | Chrome / Edge / Firefox / Safari（播放端） |
+| Go | 1.24+（仅编译时） |
+| CGO | 需要 GCC/Clang（MinGW-w64） |
+| FFmpeg | 可选，仅 `-capture ffmpeg` 时需要 |
+| VS Build Tools | 可选，仅编译 `smtc.dll` 时需要 |
 
 ## 许可证
 

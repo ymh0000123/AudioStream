@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/grandcat/zeroconf"
@@ -85,83 +86,9 @@ func main() {
 		}
 	}
 
-	defer cap.Close()
-
-	// 获取音频格式
-	audioFormat := cap.Format()
-	log.Printf("音频格式: %s", audioFormat)
-	logx.Debugf("capture", "音频格式详情: SampleRate=%d, Channels=%d, BitsPerSample=%d, BytesPerFrame=%d",
-		audioFormat.SampleRate, audioFormat.Channels, audioFormat.BitsPerSample, audioFormat.BytesPerFrame())
-
-	// 启动捕获
-	if err := cap.Start(); err != nil {
-		log.Fatalf("音频捕获启动失败: %v", err)
-	}
-	log.Println("✅ 音频捕获已启动")
-
 	// ========== 初始化 Web 播放器（如果启用）==========
+	// 注意：Web播放器初始化将在捕获goroutine中完成，因为需要音频格式信息
 	var webHub *webplayer.Hub
-	if *webAddr != "" {
-		webHub = webplayer.NewHub(audioFormat)
-		webHub.StartMediaStatePoller()
-		go func() {
-			if err := webHub.StartHTTPServer(*webAddr); err != nil {
-				log.Printf("[WebPlayer] ❌ HTTP 服务启动失败: %v", err)
-			}
-		}()
-	}
-
-	// ========== 注册 mDNS 服务 ==========
-	if *webAddr != "" {
-		_, webPort, _ := net.SplitHostPort(*webAddr)
-		logx.Debugf("webplayer", "mDNS 注册准备: webPort=%s, hostname=%s", webPort, func() string { h, _ := os.Hostname(); return h }())
-		if webPort == "" {
-			webPort = "8080"
-		}
-		hostname, _ := os.Hostname()
-		if hostname == "" {
-			hostname = "AudioStream"
-		}
-		txtRecords := []string{
-			fmt.Sprintf("sample_rate=%d", audioFormat.SampleRate),
-			fmt.Sprintf("channels=%d", audioFormat.Channels),
-			fmt.Sprintf("bits=%d", audioFormat.BitsPerSample),
-		}
-		mdnsServer, mdnsErr := zeroconf.Register(
-			hostname,
-			"_audiostream._tcp",
-			"local.",
-			portInt(webPort),
-			txtRecords,
-			nil,
-		)
-		if mdnsErr != nil {
-			log.Printf("⚠️  mDNS 注册失败: %v (不影响正常功能)", mdnsErr)
-		} else {
-			log.Printf("🔍 mDNS 服务已注册: %s._audiostream._tcp", hostname)
-			defer mdnsServer.Shutdown()
-		}
-	}
-
-	// ========== 显示二维码 ==========
-	if *webAddr != "" {
-		_, port, _ := net.SplitHostPort(*webAddr)
-		if port == "" {
-			port = "8080"
-		}
-		ip := localIP()
-		if ip != "" {
-			webURL := fmt.Sprintf("http://%s:%s", ip, port)
-			fmt.Println()
-			fmt.Println("📱 扫码打开 Web 播放器:")
-			fmt.Println()
-			png, _ := qr.New(webURL, qr.Low)
-			fmt.Print(png.ToSmallString(false))
-			fmt.Println()
-			fmt.Printf("   %s\n", webURL)
-			fmt.Println()
-		}
-	}
 
 	// ========== 设置信号处理 ==========
 	sigCh := make(chan os.Signal, 1)
@@ -171,8 +98,90 @@ func main() {
 	done := make(chan struct{})
 	sentBytes := int64(0)
 	packets := int64(0)
+	var wg sync.WaitGroup
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
+
+		// 启动捕获（对于WASAPI，这会初始化COM并锁定OS线程）
+		if err := cap.Start(); err != nil {
+			log.Fatalf("音频捕获启动失败: %v", err)
+		}
+		log.Println("✅ 音频捕获已启动")
+
+		// 获取音频格式（Start之后才能获取有效格式）
+		audioFormat := cap.Format()
+		log.Printf("音频格式: %s", audioFormat)
+		logx.Debugf("capture", "音频格式详情: SampleRate=%d, Channels=%d, BitsPerSample=%d, BytesPerFrame=%d",
+			audioFormat.SampleRate, audioFormat.Channels, audioFormat.BitsPerSample, audioFormat.BytesPerFrame())
+
+		// 初始化 Web 播放器（如果启用）
+		if *webAddr != "" {
+			webHub = webplayer.NewHub(audioFormat)
+			webHub.StartMediaStatePoller(webHub.Ctx())
+			go func() {
+				if err := webHub.StartHTTPServer(*webAddr); err != nil {
+					log.Printf("[WebPlayer] ❌ HTTP 服务启动失败: %v", err)
+				}
+			}()
+		}
+
+		// 注册 mDNS 服务
+		if *webAddr != "" {
+			_, webPort, _ := net.SplitHostPort(*webAddr)
+			logx.Debugf("webplayer", "mDNS 注册准备: webPort=%s, hostname=%s", webPort, func() string { h, _ := os.Hostname(); return h }())
+			if webPort == "" {
+				webPort = "8080"
+			}
+			hostname, _ := os.Hostname()
+			if hostname == "" {
+				hostname = "AudioStream"
+			}
+			txtRecords := []string{
+				fmt.Sprintf("sample_rate=%d", audioFormat.SampleRate),
+				fmt.Sprintf("channels=%d", audioFormat.Channels),
+				fmt.Sprintf("bits=%d", audioFormat.BitsPerSample),
+			}
+			mdnsServer, mdnsErr := zeroconf.Register(
+				hostname,
+				"_audiostream._tcp",
+				"local.",
+				portInt(webPort),
+				txtRecords,
+				nil,
+			)
+			if mdnsErr != nil {
+				log.Printf("⚠️  mDNS 注册失败: %v (不影响正常功能)", mdnsErr)
+			} else {
+				log.Printf("🔍 mDNS 服务已注册: %s._audiostream._tcp", hostname)
+				defer mdnsServer.Shutdown()
+			}
+		}
+
+		// 显示二维码
+		if *webAddr != "" {
+			_, port, _ := net.SplitHostPort(*webAddr)
+			if port == "" {
+				port = "8080"
+			}
+			ip := localIP()
+			if ip != "" {
+				webURL := fmt.Sprintf("http://%s:%s", ip, port)
+				fmt.Println()
+				fmt.Println("📱 扫码打开 Web 播放器:")
+				fmt.Println()
+				png, _ := qr.New(webURL, qr.Low)
+				fmt.Print(png.ToSmallString(false))
+				fmt.Println()
+				fmt.Printf("   %s\n", webURL)
+				fmt.Println()
+			}
+		}
+
+		log.Println("▶️  Web 播放模式已启动 (按 Ctrl+C 停止)")
+		fmt.Println()
+
 		buf := make([]byte, *bufSize)
 		readCount := 0
 		silentCount := 0
@@ -225,9 +234,6 @@ func main() {
 		}
 	}()
 
-	log.Println("▶️  Web 播放模式已启动 (按 Ctrl+C 停止)")
-	fmt.Println()
-
 	// ========== 等待停止信号 ==========
 	<-sigCh
 	log.Println("收到停止信号")
@@ -241,10 +247,15 @@ func main() {
 	log.Println()
 	log.Println("正在停止...")
 	close(done)
+	wg.Wait() // 等待捕获goroutine退出
+
+	// 在捕获goroutine退出后，安全地停止和关闭捕获器
 	cap.Stop()
+	cap.Close()
 
 	if webHub != nil {
 		webHub.Stop()
+		webplayer.CloseSmtcDLL()
 	}
 
 	log.Printf("📊 统计: 共发送 %d 包 / %.2f MB", packets, float64(sentBytes)/1024/1024)

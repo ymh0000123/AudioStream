@@ -109,8 +109,13 @@ func querySmtcViaDLL() *smtcState {
 	return &s
 }
 
-func closeSmtcDLL() {
+// CloseSmtcDLL 释放 SMTC DLL 资源
+func CloseSmtcDLL() {
 	if procClose != nil {
 		procClose.Call()
+	}
+	if dllHandle != nil {
+		dllHandle.Release()
+		dllHandle = nil
 	}
 }

@@ -1,6 +1,7 @@
 package webplayer
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"time"
@@ -118,13 +119,19 @@ func (h *Hub) BroadcastState(state *MediaState) {
 
 // StartMediaStatePoller starts periodic media state polling.
 // 使用 C++/WinRT DLL 后单次查询开销极低（~几 ms），间隔 500ms。
-func (h *Hub) StartMediaStatePoller() {
+// ctx 用于控制轮询goroutine的退出。
+func (h *Hub) StartMediaStatePoller(ctx context.Context) {
 	go func() {
 		time.Sleep(2 * time.Second)
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
-		for range ticker.C {
-			h.BroadcastState(h.queryCombinedState())
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				h.BroadcastState(h.queryCombinedState())
+			}
 		}
 	}()
 }

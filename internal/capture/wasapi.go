@@ -31,18 +31,34 @@ type wasapiLoopback struct {
 }
 
 func newLoopback() (Capture, error) {
+	return &wasapiLoopback{}, nil
+}
+
+func (wl *wasapiLoopback) Format() Format {
+	return wl.format
+}
+
+func (wl *wasapiLoopback) Start() error {
+	wl.mu.Lock()
+	defer wl.mu.Unlock()
+
+	if wl.closed {
+		return fmt.Errorf("捕获器已关闭")
+	}
+	if wl.started {
+		return nil
+	}
+
 	// ★ 锁定 OS 线程：COM 要求所有操作在同一个线程上 ★
-	// Go 的 goroutine 调度可能在线程间迁移，导致 COM 调用失败
+	// 此函数必须从将要调用 Read() 的 goroutine 中调用
 	runtime.LockOSThread()
 
 	// 初始化 COM
 	if err := ole.CoInitializeEx(0, ole.COINIT_APARTMENTTHREADED); err != nil {
 		runtime.UnlockOSThread()
-		return nil, fmt.Errorf("COM 初始化失败: %w", err)
+		return fmt.Errorf("COM 初始化失败: %w", err)
 	}
 	logx.Debugf("wasapi", "WASAPI: COM 初始化成功")
-
-	wl := &wasapiLoopback{}
 
 	// 1. 创建设备枚举器
 	if err := wca.CoCreateInstance(
@@ -54,7 +70,7 @@ func newLoopback() (Capture, error) {
 	); err != nil {
 		ole.CoUninitialize()
 		runtime.UnlockOSThread()
-		return nil, fmt.Errorf("创建设备枚举器失败: %w", err)
+		return fmt.Errorf("创建设备枚举器失败: %w", err)
 	}
 
 	// 2. 获取默认音频渲染设备（扬声器）
@@ -66,7 +82,7 @@ func newLoopback() (Capture, error) {
 		wl.deviceEnum.Release()
 		ole.CoUninitialize()
 		runtime.UnlockOSThread()
-		return nil, fmt.Errorf("获取默认音频设备失败: %w", err)
+		return fmt.Errorf("获取默认音频设备失败: %w", err)
 	}
 	logx.Debugf("wasapi", "WASAPI: 默认音频渲染设备已获取")
 
@@ -81,7 +97,7 @@ func newLoopback() (Capture, error) {
 		wl.deviceEnum.Release()
 		ole.CoUninitialize()
 		runtime.UnlockOSThread()
-		return nil, fmt.Errorf("激活音频客户端失败: %w", err)
+		return fmt.Errorf("激活音频客户端失败: %w", err)
 	}
 
 	// 4. 获取混音格式
@@ -91,7 +107,7 @@ func newLoopback() (Capture, error) {
 		wl.deviceEnum.Release()
 		ole.CoUninitialize()
 		runtime.UnlockOSThread()
-		return nil, fmt.Errorf("获取混音格式失败: %w", err)
+		return fmt.Errorf("获取混音格式失败: %w", err)
 	}
 
 	// 解析音频格式
@@ -132,7 +148,7 @@ func newLoopback() (Capture, error) {
 			wl.deviceEnum.Release()
 			ole.CoUninitialize()
 			runtime.UnlockOSThread()
-			return nil, fmt.Errorf("初始化音频客户端失败: %w (首次: %v)", err2, err)
+			return fmt.Errorf("初始化音频客户端失败: %w (首次: %v)", err2, err)
 		}
 	}
 
@@ -143,33 +159,17 @@ func newLoopback() (Capture, error) {
 		wl.deviceEnum.Release()
 		ole.CoUninitialize()
 		runtime.UnlockOSThread()
-		return nil, fmt.Errorf("获取缓冲区大小失败: %w", err)
+		return fmt.Errorf("获取缓冲区大小失败: %w", err)
 	}
 	logx.Debugf("wasapi", "WASAPI: 缓冲区大小 %d 帧", wl.bufferFrames)
-
-	return wl, nil
-}
-
-func (wl *wasapiLoopback) Format() Format {
-	return wl.format
-}
-
-func (wl *wasapiLoopback) Start() error {
-	wl.mu.Lock()
-	defer wl.mu.Unlock()
-
-	if wl.closed {
-		return fmt.Errorf("捕获器已关闭")
-	}
-	if wl.started {
-		return nil
-	}
 
 	// 获取捕获客户端
 	if err := wl.audioClient.GetService(
 		wca.IID_IAudioCaptureClient,
 		&wl.captureCli,
 	); err != nil {
+		ole.CoUninitialize()
+		runtime.UnlockOSThread()
 		return fmt.Errorf("获取捕获客户端失败: %w", err)
 	}
 
@@ -177,6 +177,8 @@ func (wl *wasapiLoopback) Start() error {
 	if err := wl.audioClient.Start(); err != nil {
 		wl.captureCli.Release()
 		wl.captureCli = nil
+		ole.CoUninitialize()
+		runtime.UnlockOSThread()
 		return fmt.Errorf("启动音频捕获失败: %w", err)
 	}
 
@@ -305,10 +307,17 @@ func (wl *wasapiLoopback) Close() error {
 		wl.deviceEnum = nil
 	}
 
+	// 释放 mixFormat (CoTaskMemAlloc 分配的)
+	if wl.mixFormat != nil {
+		ole.CoTaskMemFree(uintptr(unsafe.Pointer(wl.mixFormat)))
+		wl.mixFormat = nil
+	}
+
 	// 反初始化 COM
 	ole.CoUninitialize()
 
 	// 解锁 OS 线程
+	// 注意：此函数必须从调用 Start() 的同一个 goroutine 中调用
 	runtime.UnlockOSThread()
 
 	return nil

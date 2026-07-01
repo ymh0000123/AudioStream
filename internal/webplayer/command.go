@@ -7,6 +7,7 @@ type MediaCommand struct {
 	Action   string `json:"action"`
 	Position int64  `json:"position"`
 	Volume   int    `json:"volume"`
+	Bitrate  int    `json:"bitrate"`
 }
 
 func ParseCommand(data []byte) *MediaCommand {
@@ -18,7 +19,7 @@ func ParseCommand(data []byte) *MediaCommand {
 		return nil
 	}
 	switch cmd.Action {
-	case "play_pause", "previous", "next", "seek_to", "set_volume", "get_state":
+	case "play_pause", "previous", "next", "seek_to", "set_volume", "get_state", "set_bitrate":
 		return &cmd
 	default:
 		return nil

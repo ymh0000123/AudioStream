@@ -3,6 +3,7 @@
 package webplayer
 
 import (
+	"context"
 	"embed"
 	"encoding/binary"
 	"fmt"
@@ -37,8 +38,13 @@ type Hub struct {
 	accMu     sync.Mutex
 	convBuf   []byte // 格式转换缓冲区
 
+	clientFormats map[*websocket.Conn]capture.Format // 每个客户端独立请求的目标格式
+	clientFmtMu   sync.RWMutex
+
 	lastNonSilentAt time.Time   // 最近一次非静音数据经过 Broadcast 的时间
 	manuallyPaused  atomic.Bool // 客户端通过浏览器手动暂停，覆盖音频检测
+	ctx             context.Context
+	cancel          context.CancelFunc
 }
 
 // NewHub 创建新的 Web 播放中心
@@ -51,10 +57,12 @@ func NewHub(format capture.Format) *Hub {
 	}
 	logx.Debugf("webplayer", "WebPlayer: 源格式 %s, 浏览器格式 %s", format, webFmt)
 
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Hub{
-		clients:   make(map[*websocket.Conn]bool),
-		format:    format,
-		webFormat: webFmt,
+		clients:       make(map[*websocket.Conn]bool),
+		clientFormats: make(map[*websocket.Conn]capture.Format),
+		format:        format,
+		webFormat:     webFmt,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true // 允许跨域连接
@@ -62,8 +70,15 @@ func NewHub(format capture.Format) *Hub {
 			ReadBufferSize:  1024,
 			WriteBufferSize: 65536,
 		},
-		addr: ":8080",
+		addr:   ":8080",
+		ctx:    ctx,
+		cancel: cancel,
 	}
+}
+
+// Ctx 返回用于控制轮询goroutine的context
+func (h *Hub) Ctx() context.Context {
+	return h.ctx
 }
 
 // Broadcast 向所有连接的 WebSocket 客户端广播音频数据
@@ -109,10 +124,13 @@ func (h *Hub) Broadcast(data []byte) {
 	h.accMu.Unlock()
 
 	// 广播给所有客户端（序列化写入，防止并发写损坏消息）
+	// 按每个客户端请求的格式独立转换
 	h.writeMu.Lock()
 	logx.Debugf("webplayer", "WebPlayer: 广播 %d 字节到 %d 个客户端", len(sendData), len(h.clients))
 	for conn := range h.clients {
-		if err := conn.WriteMessage(websocket.BinaryMessage, sendData); err != nil {
+		clientFmt := h.getClientFormat(conn)
+		clientData := h.applyFormatConversion(sendData, h.webFormat, clientFmt)
+		if err := conn.WriteMessage(websocket.BinaryMessage, clientData); err != nil {
 			log.Printf("[WebPlayer] ⚠️  WebSocket 发送失败: %v", err)
 			go h.removeClient(conn)
 		}
@@ -155,6 +173,167 @@ func (h *Hub) convert32bitTo16bit(data []byte) []byte {
 	return h.convBuf
 }
 
+// getClientFormat 返回客户端请求的目标格式，未设置时使用 webFormat
+func (h *Hub) getClientFormat(conn *websocket.Conn) capture.Format {
+	h.clientFmtMu.RLock()
+	defer h.clientFmtMu.RUnlock()
+	if f, ok := h.clientFormats[conn]; ok {
+		return f
+	}
+	return h.webFormat
+}
+
+// presetFromBitrate 将码率请求(kbps)映射为 PCM 格式预设
+func presetFromBitrate(bitrate int) capture.Format {
+	switch {
+	case bitrate >= 1024:
+		return capture.Format{SampleRate: 48000, Channels: 2, BitsPerSample: 16}
+	case bitrate >= 512:
+		return capture.Format{SampleRate: 48000, Channels: 1, BitsPerSample: 16}
+	case bitrate >= 256:
+		return capture.Format{SampleRate: 24000, Channels: 1, BitsPerSample: 16}
+	case bitrate >= 128:
+		return capture.Format{SampleRate: 12000, Channels: 1, BitsPerSample: 16}
+	default:
+		return capture.Format{SampleRate: 12000, Channels: 1, BitsPerSample: 8}
+	}
+}
+
+// SetClientBitrate 设置指定客户端的码率，并发送 bitrate_changed 确认消息
+func (h *Hub) SetClientBitrate(conn *websocket.Conn, bitrate int) {
+	target := presetFromBitrate(bitrate)
+	h.clientFmtMu.Lock()
+	h.clientFormats[conn] = target
+	h.clientFmtMu.Unlock()
+
+	// 计算实际码率(kbps)
+	actualKbps := target.SampleRate * target.Channels * target.BitsPerSample / 1000
+
+	msg := fmt.Sprintf(
+		`{"type":"bitrate_changed","bitrate":%d,"sample_rate":%d,"channels":%d,"bits_per_sample":%d}`,
+		actualKbps, target.SampleRate, target.Channels, target.BitsPerSample,
+	)
+	h.writeMu.Lock()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+		log.Printf("[WebPlayer] bitrate_changed 发送失败: %v", err)
+	}
+	h.writeMu.Unlock()
+
+	log.Printf("[WebPlayer] 客户端码率已设置: %dkbps → %s", bitrate, target)
+}
+
+// applyFormatConversion 将 PCM data 从 src 格式转换为 dst 格式
+// 依次执行：采样率转换 → 声道混合 → 位深转换
+func (h *Hub) applyFormatConversion(data []byte, src, dst capture.Format) []byte {
+	if src == dst || len(data) == 0 {
+		return data
+	}
+
+	result := data
+	cur := src
+
+	// 1. 采样率转换（抽取）
+	if cur.SampleRate != dst.SampleRate && cur.SampleRate > 0 && dst.SampleRate > 0 {
+		result = convertSampleRate(result, cur.SampleRate, dst.SampleRate, cur.BytesPerFrame())
+		cur.SampleRate = dst.SampleRate
+	}
+
+	// 2. 声道混合
+	if cur.Channels != dst.Channels {
+		result = convertChannels(result, cur.Channels, dst.Channels, cur.BitsPerSample/8)
+		cur.Channels = dst.Channels
+	}
+
+	// 3. 位深转换
+	if cur.BitsPerSample != dst.BitsPerSample {
+		result = convertBitDepth(result, cur.BitsPerSample, dst.BitsPerSample)
+		cur.BitsPerSample = dst.BitsPerSample
+	}
+
+	return result
+}
+
+// convertSampleRate 通过简单抽取进行采样率转换（仅支持整数降采样）
+// data 中的帧按 bytesPerFrame 对齐，保留每 srcRate/dstRate 帧的第 1 帧
+func convertSampleRate(data []byte, srcRate, dstRate int, bytesPerFrame int) []byte {
+	if dstRate >= srcRate || bytesPerFrame <= 0 {
+		return data
+	}
+	ratio := srcRate / dstRate
+	srcFrames := len(data) / bytesPerFrame
+	dstFrames := srcFrames / ratio
+	if dstFrames == 0 {
+		return nil
+	}
+	result := make([]byte, dstFrames*bytesPerFrame)
+	for i := 0; i < dstFrames; i++ {
+		copy(result[i*bytesPerFrame:], data[i*ratio*bytesPerFrame:])
+		_ = result[i*bytesPerFrame+bytesPerFrame-1] // bounds check
+	}
+	return result
+}
+
+// convertChannels 转换声道数（16-bit 立体声↔单声道）
+func convertChannels(data []byte, srcCh, dstCh int, bytesPerSample int) []byte {
+	if srcCh == dstCh || bytesPerSample <= 0 {
+		return data
+	}
+
+	// 立体声→单声道：左右声道取平均（16-bit signed）
+	if srcCh == 2 && dstCh == 1 && bytesPerSample == 2 {
+		frames := len(data) / 4
+		if frames == 0 {
+			return nil
+		}
+		result := make([]byte, frames*2)
+		for i := 0; i < frames; i++ {
+			l := int16(binary.LittleEndian.Uint16(data[i*4:]))
+			r := int16(binary.LittleEndian.Uint16(data[i*4+2:]))
+			avg := int16((int32(l) + int32(r)) / 2)
+			binary.LittleEndian.PutUint16(result[i*2:], uint16(avg))
+		}
+		return result
+	}
+
+	// 单声道→立体声：复制声道（16-bit）
+	if srcCh == 1 && dstCh == 2 && bytesPerSample == 2 {
+		samples := len(data) / 2
+		if samples == 0 {
+			return nil
+		}
+		result := make([]byte, samples*4)
+		for i := 0; i < samples; i++ {
+			v0 := data[i*2]
+			v1 := data[i*2+1]
+			result[i*4] = v0
+			result[i*4+1] = v1
+			result[i*4+2] = v0
+			result[i*4+3] = v1
+		}
+		return result
+	}
+
+	return data
+}
+
+// convertBitDepth 转换位深（仅支持 16-bit → 8-bit）
+func convertBitDepth(data []byte, srcBits, dstBits int) []byte {
+	if srcBits == dstBits || len(data) == 0 {
+		return data
+	}
+	if srcBits == 16 && dstBits == 8 {
+		samples := len(data) / 2
+		result := make([]byte, samples)
+		for i := 0; i < samples; i++ {
+			s := int16(binary.LittleEndian.Uint16(data[i*2:]))
+			// signed 16-bit [-32768,32767] → unsigned 8-bit [0,255]
+			result[i] = byte((int32(s) + 32768) / 256)
+		}
+		return result
+	}
+	return data
+}
+
 // IsStreamingAudio 返回 AudioStream 当前是否正在传输非静音音频
 func (h *Hub) IsStreamingAudio() bool {
 	return time.Since(h.lastNonSilentAt) < 5*time.Second
@@ -178,7 +357,9 @@ func (h *Hub) Flush() {
 	h.writeMu.Lock()
 	defer h.writeMu.Unlock()
 	for conn := range h.clients {
-		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		clientFmt := h.getClientFormat(conn)
+		clientData := h.applyFormatConversion(data, h.webFormat, clientFmt)
+		if err := conn.WriteMessage(websocket.BinaryMessage, clientData); err != nil {
 			go h.removeClient(conn)
 		}
 	}
@@ -187,11 +368,16 @@ func (h *Hub) Flush() {
 // removeClient 移除并关闭连接
 func (h *Hub) removeClient(conn *websocket.Conn) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if _, ok := h.clients[conn]; ok {
 		delete(h.clients, conn)
+		h.mu.Unlock()
+		h.clientFmtMu.Lock()
+		delete(h.clientFormats, conn)
+		h.clientFmtMu.Unlock()
 		conn.Close()
+		return
 	}
+	h.mu.Unlock()
 }
 
 // ClientCount 返回当前连接的客户端数量
@@ -208,6 +394,9 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[WebPlayer] WebSocket 升级失败: %v", err)
 		return
 	}
+
+	// 为每个连接创建 done channel，用于取消延迟任务
+	done := make(chan struct{})
 
 	// 首先发送音频格式信息（JSON 文本消息）
 	// 始终报告 16-bit，因为 Go 端已经做了格式转换
@@ -237,6 +426,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	// 保持读循环以检测断开
 	defer func() {
+		close(done) // 取消所有延迟任务
 		h.removeClient(conn)
 		h.mu.RLock()
 		remaining := len(h.clients)
@@ -257,8 +447,10 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		if msgType == websocket.TextMessage {
 			if cmd := ParseCommand(msg); cmd != nil {
-				logx.Debugf("webplayer", "WebPlayer: 收到命令 action=%s, position=%d, volume=%d", cmd.Action, cmd.Position, cmd.Volume)
-				if cmd.Action == "get_state" {
+				logx.Debugf("webplayer", "WebPlayer: 收到命令 action=%s, position=%d, volume=%d, bitrate=%d", cmd.Action, cmd.Position, cmd.Volume, cmd.Bitrate)
+				if cmd.Action == "set_bitrate" {
+					h.SetClientBitrate(conn, cmd.Bitrate)
+				} else if cmd.Action == "get_state" {
 					// 客户端主动请求状态，立即查询并广播
 					h.BroadcastState(h.queryCombinedState())
 				} else if cmd.Action == "play_pause" {
@@ -284,16 +476,24 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 					// SendInput 是异步的，过早查询会拿到旧状态。
 					// 异步延迟查询：不阻塞读循环，给播放器足够时间响应。
 					go func() {
-						time.Sleep(800 * time.Millisecond)
-						h.BroadcastState(h.queryCombinedState())
+						select {
+						case <-time.After(800 * time.Millisecond):
+							h.BroadcastState(h.queryCombinedState())
+						case <-done:
+							return
+						}
 					}()
 				} else {
 					ExecuteMediaCommand(cmd)
 					// SendInput 是异步的，过早查询会拿到旧状态。
 					// 异步延迟查询：不阻塞读循环，给播放器足够时间响应。
 					go func() {
-						time.Sleep(800 * time.Millisecond)
-						h.BroadcastState(h.queryCombinedState())
+						select {
+						case <-time.After(800 * time.Millisecond):
+							h.BroadcastState(h.queryCombinedState())
+						case <-done:
+							return
+						}
 					}()
 				}
 			}
@@ -344,8 +544,11 @@ func (h *Hub) StartHTTPServer(addr string) error {
 	return nil
 }
 
-// Stop 关闭 HTTP 服务器
+// Stop 关闭 HTTP 服务器并取消所有轮询goroutine
 func (h *Hub) Stop() error {
+	// 取消媒体状态轮询goroutine
+	h.cancel()
+
 	h.mu.Lock()
 	for conn := range h.clients {
 		conn.Close()

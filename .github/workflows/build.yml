@@ -65,9 +65,11 @@ jobs:
         run: go build -ldflags="-s -w" -o server.exe ./cmd/server
 
       - name: Test
-        run: go test ./...
-        # 测试涉及 Windows SMTC / 音频会话，CI 环境通常无媒体会话，
-        # 冒烟测试会返回 nil（合法），不视为失败。但编译与运行本身必须通过。
+        run: go test -timeout 60s ./...
+        # 测试涉及 Windows SMTC / 音频会话。CI 环境为无交互式媒体会话的 headless
+        # Windows，依赖真实 SMTC 的用例已通过 CI 环境变量跳过（避免 WinRT async
+        # 调用在无媒体源时死锁）。format 等纯计算用例正常执行。-timeout 兜底防止
+        # 任何遗漏的阻塞用例把整个 job 拖到 GitHub 默认 6h 超时。
 
       - name: Upload server.exe
         uses: actions/upload-artifact@v4

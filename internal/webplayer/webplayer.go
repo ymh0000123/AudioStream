@@ -183,19 +183,34 @@ func (h *Hub) getClientFormat(conn *websocket.Conn) capture.Format {
 	return h.webFormat
 }
 
-// presetFromBitrate 将码率请求(kbps)映射为 PCM 格式预设
+// presetFromBitrate 将码率请求(kbps)映射为 PCM 格式预设。
+// 低码率档位也保留双声道，通过降低采样率/位深控制带宽。
 func presetFromBitrate(bitrate int) capture.Format {
 	switch {
-	case bitrate >= 1024:
+	case bitrate >= 3072:
+		return capture.Format{SampleRate: 96000, Channels: 2, BitsPerSample: 16}
+	case bitrate >= 2048:
+		return capture.Format{SampleRate: 64000, Channels: 2, BitsPerSample: 16}
+	case bitrate >= 1536:
 		return capture.Format{SampleRate: 48000, Channels: 2, BitsPerSample: 16}
+	case bitrate >= 1024:
+		return capture.Format{SampleRate: 32000, Channels: 2, BitsPerSample: 16}
+	case bitrate >= 768:
+		return capture.Format{SampleRate: 24000, Channels: 2, BitsPerSample: 16}
 	case bitrate >= 512:
-		return capture.Format{SampleRate: 48000, Channels: 1, BitsPerSample: 16}
+		return capture.Format{SampleRate: 16000, Channels: 2, BitsPerSample: 16}
+	case bitrate >= 384:
+		return capture.Format{SampleRate: 12000, Channels: 2, BitsPerSample: 16}
 	case bitrate >= 256:
-		return capture.Format{SampleRate: 24000, Channels: 1, BitsPerSample: 16}
+		return capture.Format{SampleRate: 8000, Channels: 2, BitsPerSample: 16}
+	case bitrate >= 192:
+		return capture.Format{SampleRate: 12000, Channels: 2, BitsPerSample: 8}
 	case bitrate >= 128:
-		return capture.Format{SampleRate: 12000, Channels: 1, BitsPerSample: 16}
+		return capture.Format{SampleRate: 8000, Channels: 2, BitsPerSample: 8}
+	case bitrate >= 96:
+		return capture.Format{SampleRate: 6000, Channels: 2, BitsPerSample: 8}
 	default:
-		return capture.Format{SampleRate: 12000, Channels: 1, BitsPerSample: 8}
+		return capture.Format{SampleRate: 4000, Channels: 2, BitsPerSample: 8}
 	}
 }
 
@@ -253,21 +268,24 @@ func (h *Hub) applyFormatConversion(data []byte, src, dst capture.Format) []byte
 	return result
 }
 
-// convertSampleRate 通过简单抽取进行采样率转换（仅支持整数降采样）
-// data 中的帧按 bytesPerFrame 对齐，保留每 srcRate/dstRate 帧的第 1 帧
+// convertSampleRate 通过最近邻重采样转换采样率，支持任意升/降采样比例。
+// data 中的帧按 bytesPerFrame 对齐。
 func convertSampleRate(data []byte, srcRate, dstRate int, bytesPerFrame int) []byte {
-	if dstRate >= srcRate || bytesPerFrame <= 0 {
+	if srcRate == dstRate || srcRate <= 0 || dstRate <= 0 || bytesPerFrame <= 0 {
 		return data
 	}
-	ratio := srcRate / dstRate
 	srcFrames := len(data) / bytesPerFrame
-	dstFrames := srcFrames / ratio
+	dstFrames := int(int64(srcFrames) * int64(dstRate) / int64(srcRate))
 	if dstFrames == 0 {
 		return nil
 	}
 	result := make([]byte, dstFrames*bytesPerFrame)
 	for i := 0; i < dstFrames; i++ {
-		copy(result[i*bytesPerFrame:], data[i*ratio*bytesPerFrame:])
+		srcIndex := int(int64(i) * int64(srcRate) / int64(dstRate))
+		if srcIndex >= srcFrames {
+			srcIndex = srcFrames - 1
+		}
+		copy(result[i*bytesPerFrame:], data[srcIndex*bytesPerFrame:])
 		_ = result[i*bytesPerFrame+bytesPerFrame-1] // bounds check
 	}
 	return result

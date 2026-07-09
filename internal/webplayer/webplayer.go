@@ -457,6 +457,13 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		return nil
 	})
+	// 客户端(OkHttp pingInterval)发的是 Ping 而非 Pong，默认 PongHandler 不会被触发，
+	// 5 分钟读超时无法刷新、到点硬关连接（客户端表现为连接中段 EOFException）。
+	// 收到 Ping 即为活性证明，刷新读超时并回 Pong（复刻 gorilla 默认 PingHandler 行为）。
+	conn.SetPingHandler(func(appData string) error {
+		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
+	})
 
 	for {
 		msgType, msg, err := conn.ReadMessage()

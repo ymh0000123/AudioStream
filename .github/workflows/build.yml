@@ -29,15 +29,6 @@ jobs:
       - name: Verify go.sum is in sync
         run: go mod verify
 
-      - name: Go fmt check
-        run: |
-          # go fmt 只会输出需要格式化的文件名；若有输出即说明存在未格式化代码，失败。
-          $diff = go fmt ./...
-          if ($diff) { Write-Error "以下文件未 go fmt: $diff"; exit 1 }
-
-      - name: Go vet
-        run: go vet ./...
-
       - name: Build smtc.dll (C++/WinRT)
         shell: cmd
         run: |
@@ -58,6 +49,15 @@ jobs:
           :: 复制到 webplayer 目录供 go:embed 嵌入
           copy /Y dll\smtc.dll internal\webplayer\smtc_embed.dll
           echo ✅ smtc.dll 构建成功
+
+      - name: Go fmt check
+        run: |
+          # go fmt 只会输出需要格式化的文件名；若有输出即说明存在未格式化代码，失败。
+          $diff = go fmt ./...
+          if ($diff) { Write-Error "以下文件未 go fmt: $diff"; exit 1 }
+
+      - name: Go vet
+        run: go vet ./...
 
       - name: Build server.exe
         env:

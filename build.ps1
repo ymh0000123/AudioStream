@@ -80,7 +80,18 @@ if (-not $nmakeOk -or -not (Test-Path "dll\smtc.dll")) {
 # 构建 server.exe
 Write-Host ""
 Write-Host "📦 正在构建 server.exe..." -ForegroundColor $Yellow
-go build -ldflags="-s -w" -o "$OutputDir\server.exe" ./cmd/server 2>&1
+
+# 获取版本信息用于注入
+$gitTag = ""
+$commitHash = ""
+try { $gitTag = git describe --tags --abbrev=0 2>$null } catch {}
+if (-not $gitTag) { $gitTag = "v0.0.0-dev" }
+try { $commitHash = git rev-parse --short HEAD 2>$null } catch {}
+if (-not $commitHash) { $commitHash = "none" }
+$buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+$ldflags = "-s -w -X main.version=$gitTag -X main.commit=$commitHash -X main.buildDate=$buildTime"
+
+go build -ldflags="$ldflags" -o "$OutputDir\server.exe" ./cmd/server 2>&1
 if (-not $?) {
     Write-Host "❌ server.exe 构建失败" -ForegroundColor $Red
     exit 1

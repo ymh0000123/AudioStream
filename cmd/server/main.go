@@ -19,10 +19,16 @@ import (
 	"audiostream/internal/capture"
 	"audiostream/internal/logx"
 	"audiostream/internal/silence"
+	"audiostream/internal/update"
 	"audiostream/internal/webplayer"
 )
 
 var (
+	// 版本信息（通过 -ldflags "-X main.version=... -X main.commit=... -X main.buildDate=..." 注入）
+	version   = "dev"
+	commit    = "none"
+	buildDate = "unknown"
+
 	webAddr  = flag.String("web", ":8080", "Web 播放器监听地址 (设为空禁用, 默认 :8080)")
 	captureM = flag.String("capture", "wasapi", "音频捕获后端: wasapi 或 ffmpeg (默认 wasapi)")
 	device   = flag.String("device", "", "FFmpeg 音频设备名 (留空自动检测)")
@@ -39,12 +45,16 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmsgprefix)
 	log.SetPrefix("[AudioStream Server] ")
 
-	fmt.Println(`
+	fmt.Printf(`
   ╔══════════════════════════════════════════╗
-  ║       AudioStream Server v1.0            ║
+  ║       AudioStream Server %-16s ║
   ║   跨平台电脑音频传输工具 - 发送端         ║
   ╚══════════════════════════════════════════╝
-	`)
+`, version)
+
+	// ========== 异步检查更新 ==========
+	updateChan := make(chan *update.CheckResult, 1)
+	go update.CheckForUpdate(version, updateChan)
 
 	// ========== 列出 FFmpeg 设备（如果请求）==========
 	if *listDev {
@@ -177,6 +187,22 @@ func main() {
 				fmt.Printf("   %s\n", webURL)
 				fmt.Println()
 			}
+		}
+
+		// 检查更新结果（非阻塞）
+		select {
+		case result := <-updateChan:
+			if result != nil && result.HasUpdate {
+				fmt.Println()
+				fmt.Println("═══════════════════════════════════════")
+				fmt.Printf("  发现新版本: %s (当前: %s)\n", result.Latest, result.Current)
+				fmt.Printf("  下载地址: %s\n", result.DownloadURL)
+				fmt.Printf("  更新说明: %s\n", result.ReleaseURL)
+				fmt.Println("═══════════════════════════════════════")
+				fmt.Println()
+			}
+		default:
+			// 检查还没完成，不阻塞启动
 		}
 
 		log.Println("▶️  Web 播放模式已启动 (按 Ctrl+C 停止)")

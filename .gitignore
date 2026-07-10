@@ -24,3 +24,4 @@ vendor/
 *.obj
 *.pdb
 dll/smtc.dll
+internal/webplayer/smtc_embed.dll

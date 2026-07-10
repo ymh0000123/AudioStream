@@ -1,0 +1,63 @@
+name: release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify go.sum is in sync
+        run: go mod verify
+
+      - name: Build smtc.dll (C++/WinRT)
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set VSPATH=%%i
+          if not defined VSPATH (
+            echo 未找到 Visual Studio Build Tools 1>&2
+            exit /b 1
+          )
+          call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" amd64
+          pushd dll
+          nmake /f Makefile
+          popd
+          if not exist dll\smtc.dll (
+            echo smtc.dll 构建失败 1>&2
+            exit /b 1
+          )
+          copy /Y dll\smtc.dll internal\webplayer\smtc_embed.dll
+          echo smtc.dll 构建成功
+
+      - name: Get version info
+        id: version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          HASH=$(git rev-parse --short HEAD)
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+
+      - name: Build server.exe
+        env:
+          CGO_ENABLED: 1
+        run: go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.tag }} -X main.commit=${{ steps.version.outputs.hash }} -X main.buildDate=${{ github.event.release.created_at }}" -o server.exe ./cmd/server
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: server.exe

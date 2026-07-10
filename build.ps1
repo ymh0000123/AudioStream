@@ -24,6 +24,30 @@ if (-not $?) {
 }
 Write-Host "✅ Go: $goVersion" -ForegroundColor $Green
 
+# 检查 Git 仓库更新
+if (Test-Path ".git") {
+    Write-Host ""
+    Write-Host "📦 正在检查 Git 仓库更新..." -ForegroundColor $Yellow
+    $remote = git remote 2>$null
+    if ($remote) {
+        $before = git rev-parse HEAD 2>$null
+        git fetch origin 2>$null
+        git pull --ff-only 2>$null
+        if ($?) {
+            $after = git rev-parse HEAD 2>$null
+            if ($before -ne $after) {
+                Write-Host "✅ 已拉取最新代码 ($before -> $after)" -ForegroundColor $Green
+            } else {
+                Write-Host "✅ 代码已是最新" -ForegroundColor $Green
+            }
+        } else {
+            Write-Host "⚠️  git pull 失败，使用本地代码继续构建" -ForegroundColor $Yellow
+        }
+    } else {
+        Write-Host "⚠️  未配置远程仓库，跳过更新检查" -ForegroundColor $Yellow
+    }
+}
+
 $env:CGO_ENABLED = "1"
 
 # 下载并验证依赖

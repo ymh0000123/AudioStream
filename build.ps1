@@ -26,6 +26,21 @@ Write-Host "✅ Go: $goVersion" -ForegroundColor $Green
 
 $env:CGO_ENABLED = "1"
 
+# 下载并验证依赖
+Write-Host ""
+Write-Host "📦 正在下载依赖..." -ForegroundColor $Yellow
+go mod download 2>&1
+if (-not $?) {
+    Write-Host "❌ 依赖下载失败" -ForegroundColor $Red
+    exit 1
+}
+go mod verify 2>&1
+if (-not $?) {
+    Write-Host "❌ 依赖校验失败" -ForegroundColor $Red
+    exit 1
+}
+Write-Host "✅ 依赖已就绪" -ForegroundColor $Green
+
 # 清理
 if ($Clean) {
     @("$OutputDir\server.exe", "$OutputDir\smtc.dll", "internal\webplayer\smtc_embed.dll") | ForEach-Object {

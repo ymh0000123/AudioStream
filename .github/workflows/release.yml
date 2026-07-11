@@ -56,7 +56,7 @@ jobs:
           echo "hash=$HASH" >> $GITHUB_OUTPUT
 
       - name: Build application icon resource
-        shell: powershell
+        shell: pwsh
         run: .\scripts\build-icon.ps1
 
       - name: Build server.exe

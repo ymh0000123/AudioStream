@@ -192,7 +192,7 @@ try {
 # === 使用 rsrc 生成 .syso（纯 Go 实现，无需 Visual Studio Build Tools）===
 $rsrc = Get-Command "rsrc" -ErrorAction SilentlyContinue
 if (-not $rsrc) {
-    Write-Host "⚠️  未找到 rsrc 工具，正在安装..." -ForegroundColor $Yellow
+    Write-Host "⚠️  未找到 rsrc 工具，正在安装..." -ForegroundColor Yellow
     go install github.com/akavel/rsrc@latest 2>&1
     $rsrc = Get-Command "rsrc" -ErrorAction SilentlyContinue
     if (-not $rsrc) {

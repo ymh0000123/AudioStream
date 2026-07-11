@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">AudioStream</title>
+  <rect width="128" height="128" rx="28" fill="#16b9a8"/>
+  <rect x="13" y="13" width="102" height="102" rx="21" fill="#0f8f86" stroke="#d8fff7" stroke-width="3"/>
+  <path d="M31 58h16l20-17v46L47 70H31z" fill="#ffffff"/>
+  <path d="M77 52c6 7 6 17 0 24M89 43c12 12 12 30 0 42" fill="none" stroke="#d8fff7" stroke-linecap="round" stroke-width="7"/>
+  <circle cx="98" cy="33" r="5" fill="#f7b955"/>
+</svg>

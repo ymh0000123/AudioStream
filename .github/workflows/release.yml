@@ -55,6 +55,10 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "hash=$HASH" >> $GITHUB_OUTPUT
 
+      - name: Build application icon resource
+        shell: powershell
+        run: .\scripts\build-icon.ps1
+
       - name: Build server.exe
         env:
           CGO_ENABLED: 1

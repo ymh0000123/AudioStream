@@ -25,3 +25,8 @@ vendor/
 *.pdb
 dll/smtc.dll
 internal/webplayer/smtc_embed.dll
+
+# Generated Windows executable icon resources
+cmd/server/audiostream.ico
+cmd/server/icon.res
+cmd/server/rsrc_windows_amd64.syso

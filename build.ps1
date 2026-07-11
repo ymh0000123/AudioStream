@@ -116,6 +116,15 @@ if (-not $nmakeOk -or -not (Test-Path "dll\smtc.dll")) {
     Write-Host "✅ smtc.dll 构建成功" -ForegroundColor $Green
 }
 
+# 构建 Windows 可执行文件图标（从 internal/webplayer/icon.svg 渲染，使用 rsrc 生成 .syso）
+Write-Host ""
+Write-Host "📦 正在构建应用图标资源..." -ForegroundColor $Yellow
+& "$PSScriptRoot\scripts\build-icon.ps1"
+if (-not $?) {
+    Write-Host "❌ 应用图标资源构建失败" -ForegroundColor $Red
+    exit 1
+}
+
 # 构建 server.exe
 Write-Host ""
 Write-Host "📦 正在构建 server.exe..." -ForegroundColor $Yellow

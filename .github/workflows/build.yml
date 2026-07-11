@@ -56,6 +56,10 @@ jobs:
           $diff = go fmt ./...
           if ($diff) { Write-Error "以下文件未 go fmt: $diff"; exit 1 }
 
+      - name: Build application icon resource
+        shell: powershell
+        run: .\scripts\build-icon.ps1
+
       - name: Go vet
         run: go vet ./...
 

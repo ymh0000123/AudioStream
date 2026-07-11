@@ -21,7 +21,7 @@ import (
 	"audiostream/internal/silence"
 )
 
-//go:embed player.html
+//go:embed player.html icon.svg
 var pageContent embed.FS
 
 // Hub 管理 WebSocket 连接并将音频数据广播给所有连接的浏览器
@@ -537,6 +537,17 @@ func (h *Hub) HandlePage(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+// HandleIcon provides the AudioStream browser icon.
+func (h *Hub) HandleIcon(w http.ResponseWriter, r *http.Request) {
+	data, err := pageContent.ReadFile("icon.svg")
+	if err != nil {
+		http.Error(w, "图标加载失败", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Write(data)
+}
+
 // HandleStats 返回连接统计信息（JSON）
 func (h *Hub) HandleStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -552,6 +563,7 @@ func (h *Hub) StartHTTPServer(addr string) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.HandlePage)
+	mux.HandleFunc("/icon.svg", h.HandleIcon)
 	mux.HandleFunc("/ws", h.HandleWS)
 	mux.HandleFunc("/stats", h.HandleStats)
 

@@ -1,508 +1,175 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AudioStream Web 播放器</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#10141b">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<title>AudioStream</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: #0f0f1a;
-    color: #e0e0e0;
-    min-height: 100vh;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-  }
-  .container {
-    background: #1a1a2e;
-    border-radius: 20px;
-    padding: 40px;
-    max-width: 480px;
-    width: 90%;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-    text-align: center;
-  }
-  .logo { font-size: 48px; margin-bottom: 10px; }
-  h1 {
-    font-size: 24px; font-weight: 600; margin-bottom: 6px;
-    background: linear-gradient(135deg, #667eea, #764ba2);
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-  }
-  .subtitle { color: #888; font-size: 14px; margin-bottom: 30px; }
-  .status-card {
-    background: #16213e; border-radius: 12px; padding: 20px; margin-bottom: 24px;
-  }
-  .status-row {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 8px 0; border-bottom: 1px solid #1a1a3e;
-  }
-  .status-row:last-child { border-bottom: none; }
-  .label { color: #888; font-size: 13px; }
-  .value { font-size: 14px; font-weight: 500; }
-  .status-indicator { display: inline-flex; align-items: center; gap: 6px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-  .dot.connected { background: #4ade80; box-shadow: 0 0 8px #4ade8044; }
-  .dot.disconnected { background: #f87171; }
-  .dot.connecting { background: #fbbf24; animation: pulse 1s infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-  .controls { display: flex; gap: 12px; justify-content: center; margin-bottom: 24px; }
-  .btn {
-    background: #2a2a4a; border: none; color: #e0e0e0; padding: 10px 24px;
-    border-radius: 8px; cursor: pointer; font-size: 14px; transition: all .2s;
-  }
-  .btn:hover { background: #3a3a5a; }
-  .btn.primary { background: linear-gradient(135deg, #667eea, #764ba2); }
-  .btn.primary:hover { opacity: .9; }
-  .btn.primary:disabled { opacity: .4; cursor: not-allowed; }
-  .btn.danger { background: #dc2626; }
-  .btn.danger:hover { background: #b91c1c; }
-  .volume-control {
-    display: flex; align-items: center; gap: 12px;
-    justify-content: center; margin-bottom: 20px;
-  }
-  .volume-control label { color: #888; font-size: 13px; }
-  input[type="range"] {
-    -webkit-appearance: none; width: 160px; height: 4px;
-    background: #2a2a4a; border-radius: 2px; outline: none;
-  }
-  input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none; width: 16px; height: 16px;
-    background: #667eea; border-radius: 50%; cursor: pointer;
-  }
-  .stats {
-    display: flex; gap: 20px; justify-content: center;
-    font-size: 12px; color: #666; flex-wrap: wrap;
-  }
-  .stats span { white-space: nowrap; }
-  .error-box {
-    background: #2d1b1b; border: 1px solid #dc262644; border-radius: 8px;
-    padding: 12px; margin-top: 16px; font-size: 13px; color: #f87171; display: none;
-  }
-  .volume-indicator {
-    width: 100%; height: 3px; background: #2a2a4a;
-    border-radius: 2px; margin-top: 8px; overflow: hidden;
-  }
-  .volume-bar {
-    height: 100%; background: linear-gradient(90deg,#667eea,#764ba2);
-    width: 0%; transition: width .1s; border-radius: 2px;
-  }
-  .debug-info {
-    margin-top: 16px; font-size: 11px; color: #555;
-    text-align: left; word-break: break-all;
-  }
+  :root { color-scheme: dark; --bg:#10141b; --surface:#181e27; --surface-2:#202936; --line:#303b49; --text:#f1f5f9; --muted:#91a0b2; --accent:#42d3a2; --accent-dark:#11795b; --warning:#f7b955; --danger:#f27575; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-width:320px; min-height:100vh; font-family:"Segoe UI", "Microsoft YaHei", system-ui, sans-serif; color:var(--text); background:var(--bg); }
+  button, input, select { font:inherit; }
+  button { color:inherit; }
+  .app { width:min(1120px, 100%); min-height:100vh; margin:auto; padding:28px 32px 40px; display:grid; grid-template-rows:auto 1fr; gap:36px; }
+  .topbar { display:flex; align-items:center; justify-content:space-between; gap:18px; }
+  .brand { display:flex; align-items:center; gap:12px; font-weight:700; font-size:18px; letter-spacing:0; }
+  .brand-mark { width:34px; height:34px; border:2px solid var(--accent); border-radius:8px; display:grid; place-items:center; font-size:18px; color:var(--accent); }
+  .brand-sub { display:block; margin-top:2px; font-size:12px; font-weight:400; color:var(--muted); }
+  .connection { display:flex; align-items:center; gap:9px; padding:7px 10px; border:1px solid var(--line); border-radius:6px; color:var(--muted); font-size:13px; }
+  .status-dot { width:8px; height:8px; border-radius:50%; background:#6c7887; }
+  .connection.connected .status-dot { background:var(--accent); box-shadow:0 0 0 4px rgba(66,211,162,.13); }
+  .connection.connecting .status-dot { background:var(--warning); animation:blink 1s infinite; }
+  @keyframes blink { 50% { opacity:.35; } }
+  .layout { display:grid; grid-template-columns:minmax(0, 1.55fr) minmax(280px, .85fr); gap:24px; align-items:start; }
+  .player { min-height:500px; padding:34px; background:var(--surface); border:1px solid var(--line); border-radius:8px; display:flex; flex-direction:column; }
+  .eyebrow { display:flex; align-items:center; justify-content:space-between; color:var(--muted); font-size:12px; }
+  .live { display:flex; align-items:center; gap:6px; color:var(--accent); font-weight:600; }
+  .live i { width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .artwork { position:relative; height:188px; margin:28px 0 25px; overflow:hidden; border-radius:6px; background:#142d2b; display:grid; place-items:center; }
+  .artwork::before, .artwork::after { content:""; position:absolute; inset:0; opacity:.9; background:repeating-linear-gradient(90deg, transparent 0 18px, rgba(66,211,162,.14) 18px 20px, transparent 20px 37px); transform:skewY(-8deg); }
+  .artwork::after { background:linear-gradient(90deg, rgba(16,20,27,.9), transparent 50%, rgba(16,20,27,.7)); transform:none; }
+  #waveform { position:relative; z-index:1; width:88%; height:65%; }
+  .track-title { font-size:clamp(20px, 3vw, 28px); font-weight:650; line-height:1.25; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .track-meta { margin-top:7px; color:var(--muted); font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .progress-area { margin-top:28px; }
+  input[type="range"] { width:100%; margin:0; accent-color:var(--accent); cursor:pointer; }
+  .seek { height:5px; }
+  .time-row { display:flex; justify-content:space-between; margin-top:8px; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+  .transport { display:flex; justify-content:center; align-items:center; gap:20px; margin-top:24px; }
+  .icon-button { width:40px; height:40px; padding:0; border:0; background:transparent; border-radius:6px; cursor:pointer; font-size:21px; transition:background .15s, color .15s; }
+  .icon-button:hover:not(:disabled) { background:var(--surface-2); }
+  .icon-button:disabled { opacity:.35; cursor:not-allowed; }
+  .play-button { width:54px; height:54px; border:0; border-radius:50%; background:var(--accent); color:#082019; cursor:pointer; font-size:22px; font-weight:700; transition:transform .15s, background .15s; }
+  .play-button:hover:not(:disabled) { background:#70e2bd; transform:scale(1.04); }
+  .play-button:disabled { background:#455260; color:#9dabb9; cursor:not-allowed; }
+  .side { display:grid; gap:16px; }
+  .panel { padding:20px; border:1px solid var(--line); border-radius:8px; background:var(--surface); }
+  .panel-title { margin:0 0 18px; color:var(--muted); font-size:12px; font-weight:600; letter-spacing:.05em; }
+  .volume { display:grid; grid-template-columns:34px 1fr 40px; align-items:center; gap:10px; font-size:14px; }
+  .volume output { text-align:right; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+  .setting { display:grid; grid-template-columns:1fr auto; align-items:center; gap:14px; margin-top:20px; font-size:14px; }
+  .setting span { color:var(--muted); }
+  select { width:132px; padding:8px 10px; border:1px solid var(--line); border-radius:5px; background:var(--surface-2); color:var(--text); font-size:13px; outline:none; }
+  .meters { display:grid; grid-template-columns:repeat(28, 1fr); align-items:end; gap:3px; height:62px; padding:10px 0 2px; }
+  .meter-bar { min-height:3px; background:#344453; border-radius:2px; transition:height .09s ease, background .09s ease; }
+  .details { margin:0; }
+  .details div { display:flex; align-items:center; justify-content:space-between; padding:12px 0; border-top:1px solid var(--line); gap:12px; }
+  .details div:first-child { border-top:0; padding-top:0; }
+  .details dt { color:var(--muted); font-size:13px; }
+  .details dd { margin:0; text-align:right; font-size:13px; font-variant-numeric:tabular-nums; }
+  .connect-button { width:100%; padding:11px 16px; border:1px solid var(--accent); border-radius:6px; background:var(--accent); color:#092218; cursor:pointer; font-weight:700; font-size:14px; }
+  .connect-button:hover { background:#70e2bd; border-color:#70e2bd; }
+  .connect-button.disconnect { background:transparent; color:var(--text); border-color:var(--line); }
+  .message { min-height:18px; margin:14px 0 0; color:var(--muted); font-size:12px; text-align:center; }
+  .message.error { color:var(--danger); }
+  @media (max-width:760px) { .app { padding:20px 16px 28px; gap:28px; } .layout { grid-template-columns:1fr; } .player { min-height:0; padding:24px 20px; } .artwork { height:154px; margin:22px 0; } .side { grid-template-columns:1fr 1fr; } .side .panel:last-child { grid-column:1/-1; } }
+  @media (max-width:460px) { .topbar { align-items:flex-start; } .connection { white-space:nowrap; } .brand-sub { display:none; } .side { grid-template-columns:1fr; } .side .panel:last-child { grid-column:auto; } }
 </style>
 </head>
 <body>
-<div class="container">
-  <div class="logo">🎵</div>
-  <h1>AudioStream</h1>
-  <p class="subtitle">跨平台音频流 — Web 播放器</p>
-
-  <div class="status-card">
-    <div class="status-row">
-      <span class="label">连接状态</span>
-      <span class="value">
-        <span class="status-indicator">
-          <span class="dot disconnected" id="statusDot"></span>
-          <span id="statusText">未连接</span>
-        </span>
-      </span>
-    </div>
-    <div class="status-row">
-      <span class="label">音频格式</span>
-      <span class="value" id="audioFormat">等待连接...</span>
-    </div>
-    <div class="status-row">
-      <span class="label">已接收数据</span>
-      <span class="value" id="receivedData">0 KB</span>
-    </div>
-    <div class="status-row" id="bufferRow">
-      <span class="label">缓冲状态</span>
-      <span class="value" id="bufferStatus">-</span>
-    </div>
-    <div class="status-row">
-      <span class="label">AudioContext 状态</span>
-      <span class="value" id="audioCtxStatus">未创建</span>
-    </div>
-    <div class="status-row" id="nowPlayingRow" style="display:none;">
-      <span class="label">正在播放</span>
-      <span class="value" id="nowPlayingText">-</span>
-    </div>
-  </div>
-
-  <div class="volume-control">
-    <label>🔊 音量</label>
-    <input type="range" id="volumeSlider" min="0" max="100" value="80">
-    <span id="volumeLabel">80%</span>
-  </div>
-
-  <div class="controls">
-    <button class="btn primary" id="connectBtn" onclick="toggleConnection()">🎧 连接</button>
-    <button class="btn danger" id="disconnectBtn" onclick="disconnect()" disabled>断开</button>
-  </div>
-
-  <div class="volume-indicator">
-    <div class="volume-bar" id="vuBar"></div>
-  </div>
-
-  <div class="error-box" id="errorBox"></div>
-
-  <div class="stats">
-    <span>采样率: <strong id="statSampleRate">-</strong></span>
-    <span>通道: <strong id="statChannels">-</strong></span>
-    <span>位深: <strong id="statBits">-</strong></span>
-    <span>延迟: <strong id="statLatency">-</strong></span>
-  </div>
-
-  <div class="debug-info" id="debugInfo">就绪，点击"连接"开始</div>
-</div>
-
+<main class="app">
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">~</span><span>AudioStream<small class="brand-sub">系统音频实时播放</small></span></div>
+    <div class="connection" id="connection" aria-live="polite"><i class="status-dot"></i><span id="connectionText">未连接</span></div>
+  </header>
+  <section class="layout">
+    <article class="player">
+      <div class="eyebrow"><span id="sourceLabel">等待音频源</span><span class="live"><i></i> LIVE</span></div>
+      <div class="artwork"><canvas id="waveform" aria-label="实时音频波形"></canvas></div>
+      <div class="track-title" id="trackTitle">准备接收音频</div>
+      <div class="track-meta" id="trackMeta">连接后将显示当前媒体信息</div>
+      <div class="progress-area">
+        <input class="seek" id="seek" type="range" min="0" max="1000" value="0" aria-label="播放进度" disabled>
+        <div class="time-row"><span id="elapsed">0:00</span><span id="duration">--:--</span></div>
+      </div>
+      <div class="transport" aria-label="远程媒体控制">
+        <button class="icon-button" id="previous" type="button" title="上一曲" aria-label="上一曲" disabled>&#9198;</button>
+        <button class="play-button" id="playPause" type="button" title="播放或暂停" aria-label="播放或暂停" disabled>&#9654;</button>
+        <button class="icon-button" id="next" type="button" title="下一曲" aria-label="下一曲" disabled>&#9197;</button>
+      </div>
+    </article>
+    <aside class="side">
+      <section class="panel">
+        <h2 class="panel-title">播放设置</h2>
+        <label class="volume"><span aria-hidden="true">VOL</span><input id="volume" type="range" min="0" max="100" value="80" aria-label="本地播放音量"><output id="volumeValue">80%</output></label>
+        <label class="setting"><span>传输码率</span><select id="bitrate" aria-label="传输码率" disabled><option value="128">128 kbps</option><option value="256">256 kbps</option><option value="512">512 kbps</option><option value="768">768 kbps</option><option value="1024">1024 kbps</option><option value="1536">1536 kbps</option><option value="2048">2048 kbps</option><option value="3072" selected>3072 kbps</option></select></label>
+      </section>
+      <section class="panel">
+        <h2 class="panel-title">输入电平</h2>
+        <div class="meters" id="meters" aria-label="实时音频电平"></div>
+      </section>
+      <section class="panel">
+        <h2 class="panel-title">连接详情</h2>
+        <dl class="details"><div><dt>音频格式</dt><dd id="format">--</dd></div><div><dt>缓冲</dt><dd id="buffer">--</dd></div><div><dt>接收速率</dt><dd id="rate">--</dd></div><div><dt>数据总量</dt><dd id="received">0 KB</dd></div></dl>
+      </section>
+      <section class="panel"><button class="connect-button" id="connectButton" type="button">连接播放</button><p class="message" id="message" aria-live="polite">点击连接以启用浏览器音频</p></section>
+    </aside>
+  </section>
+</main>
 <script>
-// ========== 状态 ==========
-let ws = null;
-let audioCtx = null;
-let audioFormat = null;
-let connected = false;
-let receivedBytes = 0;
-let startTime = 0;
-let nextPlayTime = 0;
-let playbackQueue = [];
-let isPlaying = false;
-let vuTimer = null;
-let analyser = null;
-let dataArray = null;
+const $ = id => document.getElementById(id);
+let ws, audioCtx, gainNode, analyser, audioFormat, nextPlayTime = 0, connected = false;
+let receivedBytes = 0, connectedAt = 0, currentState = { playing:false, position:0, duration:0 }, seeking = false;
+const bars = Array.from({length:28}, () => { const b=document.createElement('i'); b.className='meter-bar'; $('meters').append(b); return b; });
 
-const connectBtn = document.getElementById('connectBtn');
-const disconnectBtn = document.getElementById('disconnectBtn');
-const statusDot = document.getElementById('statusDot');
-const statusText = document.getElementById('statusText');
-const audioFormatEl = document.getElementById('audioFormat');
-const receivedDataEl = document.getElementById('receivedData');
-const bufferStatusEl = document.getElementById('bufferStatus');
-const errorBox = document.getElementById('errorBox');
-const volumeSlider = document.getElementById('volumeSlider');
-const volumeLabel = document.getElementById('volumeLabel');
-const vuBar = document.getElementById('vuBar');
-const audioCtxStatus = document.getElementById('audioCtxStatus');
-const debugInfo = document.getElementById('debugInfo');
+function setConnection(state, text) { $('connection').className='connection ' + state; $('connectionText').textContent=text; }
+function setMessage(text, error=false) { $('message').textContent=text; $('message').className='message' + (error ? ' error' : ''); }
+function wsURL() { return (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws'; }
+function command(action, extra={}) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'command', action, ...extra})); }
+function setControls(enabled) { ['previous','playPause','next'].forEach(id => $(id).disabled=!enabled); $('bitrate').disabled=!enabled; }
+function formatTime(ms) { if (!Number.isFinite(ms) || ms < 0) return '--:--'; const s=Math.floor(ms/1000); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+function updateProgress() { if (!seeking && currentState.duration > 0) { if (currentState.playing) currentState.position=Math.min(currentState.position+500,currentState.duration); $('seek').value=Math.round(currentState.position/currentState.duration*1000); $('elapsed').textContent=formatTime(currentState.position); } }
 
-function debug(msg) {
-  const t = new Date().toLocaleTimeString();
-  debugInfo.textContent = '[' + t + '] ' + msg;
-  console.log('[AudioStream]', msg);
+function initAudio() {
+  if (audioCtx) return true;
+  try { audioCtx=new (window.AudioContext || window.webkitAudioContext)(); gainNode=audioCtx.createGain(); gainNode.gain.value=$('volume').value/100; gainNode.connect(audioCtx.destination); analyser=audioCtx.createAnalyser(); analyser.fftSize=256; analyser.connect(gainNode); return true; }
+  catch (error) { setMessage('此浏览器不支持 Web Audio: '+error.message, true); return false; }
 }
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.appendChild(document.createTextNode(str));
-  return div.innerHTML;
+async function connect() {
+  if (connected) return disconnect();
+  if (!initAudio()) return;
+  try { await audioCtx.resume(); } catch (_) {}
+  setConnection('connecting','正在连接'); setMessage('正在连接音频服务...'); $('connectButton').disabled=true;
+  ws = new WebSocket(wsURL()); ws.binaryType='arraybuffer';
+  ws.onopen = () => { connected=true; connectedAt=Date.now(); receivedBytes=0; nextPlayTime=0; setConnection('connected','实时连接'); $('connectButton').disabled=false; $('connectButton').textContent='断开连接'; setControls(true); $('seek').disabled=currentState.duration<=0; setMessage('音频链路已建立'); command('get_state'); };
+  ws.onmessage = event => { if (event.data instanceof ArrayBuffer) receivePCM(event.data); else { try { handleMessage(JSON.parse(event.data)); } catch (_) { setMessage('收到无法解析的服务消息', true); } } };
+  ws.onerror = () => setMessage('无法连接到服务，请确认 AudioStream 正在运行。', true);
+  ws.onclose = () => { if (connected) setMessage('连接已断开', true); resetConnection(); };
 }
-
-// ========== 音量控制 ==========
-volumeSlider.addEventListener('input', function() {
-  const val = this.value / 100;
-  volumeLabel.textContent = this.value + '%';
-  if (audioCtx && audioCtx._gainNode) {
-    audioCtx._gainNode.gain.value = val;
-  }
-});
-
-// ========== VU 表 ==========
-function startVUMeter() {
-  if (vuTimer) return;
-  vuTimer = setInterval(() => {
-    if (analyser && connected && dataArray) {
-      try {
-        analyser.getByteTimeDomainData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-          const val = (dataArray[i] - 128) / 128;
-          sum += val * val;
-        }
-        const rms = Math.sqrt(sum / dataArray.length);
-        let pct = Math.min(rms * 5, 1) * 100;
-        vuBar.style.width = pct + '%';
-      } catch(e) { /* ignore */ }
-    } else {
-      vuBar.style.width = '0%';
-    }
-  }, 80);
+function disconnect() { if (ws) { const socket=ws; ws=undefined; socket.close(); } resetConnection(); setMessage('已断开连接'); }
+function resetConnection() { connected=false; nextPlayTime=0; setConnection('', '未连接'); $('connectButton').disabled=false; $('connectButton').textContent='连接播放'; setControls(false); $('seek').disabled=true; }
+function handleMessage(msg) {
+  if (msg.type === 'format' || msg.type === 'bitrate_changed') { audioFormat={sample_rate:msg.sample_rate,channels:msg.channels,bits_per_sample:msg.bits_per_sample}; $('format').textContent=`${msg.sample_rate / 1000} kHz · ${msg.channels} 声道 · ${msg.bits_per_sample} bit`; if (msg.type==='bitrate_changed') setMessage(`码率已切换至 ${msg.bitrate} kbps`); return; }
+  if (msg.type !== 'state') return;
+  currentState={playing:!!msg.playing, position:msg.position||0, duration:msg.duration||0};
+  $('trackTitle').textContent=msg.title || (msg.playing ? '正在播放系统音频' : '等待音频输入');
+  $('trackMeta').textContent=[msg.artist,msg.album].filter(Boolean).join(' · ') || (msg.playing ? 'AudioStream 系统音频流' : '连接保持中');
+  $('sourceLabel').textContent=msg.playing ? '来自当前系统媒体会话' : '等待音频源';
+  $('playPause').innerHTML=msg.playing ? '&#10074;&#10074;' : '&#9654;';
+  $('playPause').title=msg.playing ? '暂停' : '播放';
+  $('seek').disabled=!connected || !currentState.duration;
+  $('duration').textContent=formatTime(currentState.duration); $('elapsed').textContent=formatTime(currentState.position); if (currentState.duration) $('seek').value=Math.round(currentState.position/currentState.duration*1000);
 }
-
-// ========== 连接管理 ==========
-function getWebSocketURL() {
-  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return protocol + '//' + location.host + '/ws';
-}
-
-function getAudioContextStatus() {
-  if (!audioCtx) return '未创建';
-  return audioCtx.state + (audioCtx.sampleRate ? ' (' + audioCtx.sampleRate + 'Hz)' : '');
-}
-
-function connect() {
-  if (ws) return;
-
-  // ★ 核心修复：在用户点击的同步上下文中创建 AudioContext ★
-  // 浏览器自动播放策略要求 AudioContext 必须由用户手势触发
-  if (!audioCtx) {
-    try {
-      debug('正在创建 AudioContext...');
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      audioCtx._gainNode = audioCtx.createGain();
-      audioCtx._gainNode.gain.value = volumeSlider.value / 100;
-      audioCtx._gainNode.connect(audioCtx.destination);
-      audioCtxStatus.textContent = getAudioContextStatus();
-      debug('AudioContext 已创建: ' + audioCtx.state);
-    } catch(e) {
-      showError('创建 AudioContext 失败 (浏览器可能不支持): ' + e.message);
-      debug('AudioContext 创建失败: ' + e.message);
-      return;
-    }
-  }
-
-  // 尝试恢复（某些浏览器即使同步创建也可能是 suspended）
-  if (audioCtx.state === 'suspended') {
-    debug('AudioContext 处于 suspended 状态，尝试 resume...');
-    audioCtx.resume().then(() => {
-      debug('AudioContext 已恢复: ' + audioCtx.state);
-      audioCtxStatus.textContent = getAudioContextStatus();
-    }).catch(e => {
-      debug('AudioContext resume 失败: ' + e.message);
-    });
-  }
-
-  audioCtxStatus.textContent = getAudioContextStatus();
-  setStatus('connecting', '连接中...');
-  showError('');
-
-  const url = getWebSocketURL();
-  debug('正在连接 WebSocket: ' + url);
-  ws = new WebSocket(url);
-  ws.binaryType = 'arraybuffer';
-
-  ws.onopen = function() {
-    connected = true;
-    startTime = Date.now();
-    receivedBytes = 0;
-    nextPlayTime = 0;
-    playbackQueue = [];
-    setStatus('connected', '已连接');
-    connectBtn.disabled = true;
-    disconnectBtn.disabled = false;
-
-    // AudioContext 已在 connect() 中创建，这里只确保 resume
-    if (audioCtx && audioCtx.state === 'suspended') {
-      audioCtx.resume().catch(e => {});
-    }
-    audioCtxStatus.textContent = getAudioContextStatus();
-    debug('WebSocket 已连接');
-  };
-
-  ws.onmessage = function(event) {
-    if (event.data instanceof ArrayBuffer) {
-      // PCM 二进制数据
-      if (!audioCtx || !audioFormat) {
-        // 还没收到格式信息，先不要丢弃数据
-        return;
-      }
-      try {
-        receivePCM(event.data);
-      } catch(e) {
-        console.error('PCM 播放出错:', e);
-      }
-    } else {
-      // JSON 消息（格式信息或播放状态）
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'format') {
-          audioFormat = msg;
-          updateFormatInfo(msg);
-        } else if (msg.type === 'state') {
-          const row = document.getElementById('nowPlayingRow');
-          const text = document.getElementById('nowPlayingText');
-          if (msg.playing && msg.title) {
-            row.style.display = 'flex';
-            text.innerHTML = '<strong>' + escapeHtml(msg.title) + '</strong>' +
-              (msg.artist ? ' — ' + escapeHtml(msg.artist) : '');
-          } else if (msg.playing) {
-            row.style.display = 'flex';
-            text.textContent = '正在播放...';
-          } else {
-            row.style.display = 'none';
-          }
-        }
-      } catch(e) {
-        console.error('解析 JSON 消息失败:', e);
-      }
-    }
-  };
-
-  ws.onerror = function(err) {
-    showError('WebSocket 连接错误 - 请确保 Server 正在运行');
-    debug('WebSocket 错误');
-    disconnect();
-  };
-
-  ws.onclose = function(e) {
-    debug('WebSocket 已断开 (code=' + e.code + ' reason=' + e.reason + ')');
-    setStatus('disconnected', '已断开');
-    connectBtn.disabled = false;
-    disconnectBtn.disabled = true;
-    connected = false;
-    // 不关闭 AudioContext，保留以便下次连接时复用
-    analyser = null;
-    nextPlayTime = 0;
-  };
-}
-
-function disconnect() {
-  if (ws) {
-    ws.onclose = null;
-    ws.close();
-    ws = null;
-  }
-  connected = false;
-  setStatus('disconnected', '已断开');
-  connectBtn.disabled = false;
-  disconnectBtn.disabled = true;
-  analyser = null;
-  nextPlayTime = 0;
-  playbackQueue = [];
-  debug('已断开连接');
-}
-
-function toggleConnection() {
-  if (connected) {
-    disconnect();
-  } else {
-    connect();
-  }
-}
-
-// ========== PCM 播放 ==========
 function receivePCM(data) {
-  receivedBytes += data.byteLength;
-  updateStats();
-
-  if (!audioFormat) return;
-
-  const bytesPerSample = audioFormat.bits_per_sample / 8;
-  const frameCount = data.byteLength / bytesPerSample / audioFormat.channels;
-  if (frameCount <= 0 || !isFinite(frameCount) || Math.floor(frameCount) !== frameCount) {
-    return; // 数据不完整，跳过
-  }
-
-  try {
-    // 16-bit PCM → Float32
-    const int16Data = new Int16Array(data);
-    const floatData = new Float32Array(int16Data.length);
-    for (let i = 0; i < int16Data.length; i++) {
-      floatData[i] = int16Data[i] / 32768;
-    }
-
-    // 创建 AudioBuffer
-    const buffer = audioCtx.createBuffer(
-      audioFormat.channels, Math.floor(frameCount), audioFormat.sample_rate
-    );
-    for (let ch = 0; ch < audioFormat.channels; ch++) {
-      const channelData = buffer.getChannelData(ch);
-      for (let i = 0; i < frameCount; i++) {
-        channelData[i] = floatData[i * audioFormat.channels + ch];
-      }
-    }
-
-    scheduleBuffer(buffer);
-  } catch(e) {
-    debug('AudioBuffer 处理出错: ' + e.message);
-  }
+  if (!audioCtx || !audioFormat) return;
+  const bytesPerSample=audioFormat.bits_per_sample/8, frames=data.byteLength/(bytesPerSample*audioFormat.channels);
+  if (!Number.isInteger(frames) || frames<1) return;
+  const buffer=audioCtx.createBuffer(audioFormat.channels,frames,audioFormat.sample_rate);
+  const view=new DataView(data); for(let channel=0; channel<audioFormat.channels; channel++){ const channelData=buffer.getChannelData(channel); for(let frame=0;frame<frames;frame++){ const offset=(frame*audioFormat.channels+channel)*bytesPerSample; channelData[frame]=bytesPerSample===1 ? (view.getUint8(offset)-128)/128 : view.getInt16(offset,true)/32768; } }
+  const source=audioCtx.createBufferSource(); source.buffer=buffer; source.connect(analyser); const now=audioCtx.currentTime; nextPlayTime=Math.max(nextPlayTime,now+.02); source.start(nextPlayTime); nextPlayTime+=buffer.duration;
+  receivedBytes+=data.byteLength; updateStats();
 }
+function updateStats() { const elapsed=Math.max((Date.now()-connectedAt)/1000,.1), buffered=Math.max(0,nextPlayTime-audioCtx.currentTime); $('received').textContent=receivedBytes>1048576 ? (receivedBytes/1048576).toFixed(2)+' MB' : (receivedBytes/1024).toFixed(1)+' KB'; $('rate').textContent=(receivedBytes/elapsed/1024).toFixed(0)+' KB/s'; $('buffer').textContent=Math.round(buffered*1000)+' ms'; }
+function drawMeters() { requestAnimationFrame(drawMeters); if (!analyser || !connected) return bars.forEach(b=>b.style.height='3px'); const samples=new Uint8Array(analyser.frequencyBinCount); analyser.getByteFrequencyData(samples); const width=$('waveform').width=$('waveform').clientWidth*devicePixelRatio, height=$('waveform').height=$('waveform').clientHeight*devicePixelRatio, ctx=$('waveform').getContext('2d'); ctx.clearRect(0,0,width,height); ctx.fillStyle='#42d3a2'; const step=width/48; for(let i=0;i<48;i++){ const value=samples[Math.floor(i*samples.length/48)]/255, h=Math.max(4,value*height*.9); ctx.fillRect(i*step,(height-h)/2,Math.max(2,step-2),h); } bars.forEach((bar,i)=>{ const value=samples[Math.floor(i*samples.length/bars.length)]/255; bar.style.height=(3+value*47)+'px'; bar.style.background=value>.7?'#f7b955':'#42d3a2'; }); }
 
-function scheduleBuffer(buffer) {
-  if (!audioCtx) return;
-
-  // 确保 analyser 已创建
-  if (!analyser) {
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 256;
-    dataArray = new Uint8Array(analyser.fftSize);
-  }
-
-  const source = audioCtx.createBufferSource();
-  source.buffer = buffer;
-
-  // 音频节点链: source → analyser → gainNode → destination
-  source.connect(analyser);
-  analyser.connect(audioCtx._gainNode);
-
-  // 时序调度：消除播放间隙
-  const now = audioCtx.currentTime;
-  if (nextPlayTime < now) {
-    nextPlayTime = now;
-  }
-
-  source.start(nextPlayTime);
-  nextPlayTime += buffer.duration;
-
-  // 确保 AudioContext 处于运行状态
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume().catch(e => {});
-  }
-
-  // 更新缓冲状态
-  const buffered = nextPlayTime - audioCtx.currentTime;
-  bufferStatusEl.textContent = (buffered * 1000).toFixed(0) + ' ms';
-  audioCtxStatus.textContent = getAudioContextStatus();
-}
-
-// ========== UI 更新 ==========
-function setStatus(state, text) {
-  statusDot.className = 'dot ' + state;
-  statusText.textContent = text;
-  if (state === 'connected') {
-    audioFormatEl.textContent = '接收中...';
-  }
-}
-
-function updateFormatInfo(fmt) {
-  const str = fmt.sample_rate + 'Hz / ' + fmt.channels + 'ch / ' + fmt.bits_per_sample + 'bit';
-  audioFormatEl.textContent = str;
-  document.getElementById('statSampleRate').textContent = fmt.sample_rate + 'Hz';
-  document.getElementById('statChannels').textContent = fmt.channels + 'ch';
-  document.getElementById('statBits').textContent = fmt.bits_per_sample + 'bit';
-  document.getElementById('statLatency').textContent = '实时';
-}
-
-function updateStats() {
-  const elapsed = (Date.now() - startTime) / 1000;
-  const kb = (receivedBytes / 1024).toFixed(1);
-  const mb = (receivedBytes / 1024 / 1024).toFixed(3);
-  if (receivedBytes > 1024 * 1024) {
-    receivedDataEl.textContent = mb + ' MB';
-    if (elapsed > 0) {
-      document.getElementById('statLatency').textContent =
-        (receivedBytes / elapsed / 1024).toFixed(0) + ' KB/s';
-    }
-  } else {
-    receivedDataEl.textContent = kb + ' KB';
-  }
-}
-
-function showError(msg) {
-  if (msg) {
-    errorBox.textContent = msg;
-    errorBox.style.display = 'block';
-  } else {
-    errorBox.style.display = 'none';
-  }
-}
-
-// ========== 初始化 ==========
-startVUMeter();
-setStatus('disconnected', '未连接');
-debug('页面已加载，点击"连接"开始');
+$('connectButton').addEventListener('click',connect);
+$('volume').addEventListener('input',e=>{ const value=e.target.value; $('volumeValue').textContent=value+'%'; if(gainNode) gainNode.gain.value=value/100; });
+$('previous').addEventListener('click',()=>command('previous')); $('next').addEventListener('click',()=>command('next')); $('playPause').addEventListener('click',()=>command('play_pause'));
+$('bitrate').addEventListener('change',e=>command('set_bitrate',{bitrate:Number(e.target.value)}));
+$('seek').addEventListener('input',()=>{ seeking=true; $('elapsed').textContent=formatTime(currentState.duration*$('seek').value/1000); }); $('seek').addEventListener('change',()=>{ const position=Math.round(currentState.duration*$('seek').value/1000); currentState.position=position; command('seek_to',{position}); seeking=false; });
+setConnection('','未连接'); setInterval(updateProgress,500); drawMeters();
 </script>
 </body>
 </html>

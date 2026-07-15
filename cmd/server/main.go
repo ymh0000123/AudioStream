@@ -118,6 +118,14 @@ func main() {
 		if err := cap.Start(); err != nil {
 			log.Fatalf("音频捕获启动失败: %v", err)
 		}
+		defer func() {
+			if err := cap.Stop(); err != nil {
+				log.Printf("停止音频捕获失败: %v", err)
+			}
+			if err := cap.Close(); err != nil {
+				log.Printf("关闭音频捕获失败: %v", err)
+			}
+		}()
 		log.Println("✅ 音频捕获已启动")
 
 		// 获取音频格式（Start之后才能获取有效格式）
@@ -211,6 +219,16 @@ func main() {
 		buf := make([]byte, *bufSize)
 		readCount := 0
 		silentCount := 0
+		wasSilent := true
+		flushOnSilence := func() {
+			if wasSilent {
+				return
+			}
+			if webHub != nil {
+				webHub.Flush()
+			}
+			wasSilent = true
+		}
 		for {
 			select {
 			case <-done:
@@ -225,6 +243,7 @@ func main() {
 			}
 			if n == 0 {
 				silentCount++
+				flushOnSilence()
 				logx.Debugf("capture", "Read 返回 0 字节 (静音)")
 				continue
 			}
@@ -234,9 +253,11 @@ func main() {
 			// 静音检测：幅度低于阈值时跳过发送
 			if silence.IsSilent(buf[:n], audioFormat.BitsPerSample) {
 				silentCount++
+				flushOnSilence()
 				logx.Debugf("capture", "静音跳过: %d 字节", n)
 				continue
 			}
+			wasSilent = false
 
 			// 复制数据（Web 广播需要副本）
 			data := make([]byte, n)
@@ -274,10 +295,6 @@ func main() {
 	log.Println("正在停止...")
 	close(done)
 	wg.Wait() // 等待捕获goroutine退出
-
-	// 在捕获goroutine退出后，安全地停止和关闭捕获器
-	cap.Stop()
-	cap.Close()
 
 	if webHub != nil {
 		webHub.Stop()

@@ -24,11 +24,30 @@ import (
 //go:embed player.html icon.svg
 var pageContent embed.FS
 
+const (
+	audioPacketMilliseconds = 20
+	clientAudioQueueSize    = 4
+	clientControlQueueSize  = 8
+	clientWriteTimeout      = 2 * time.Second
+)
+
+type outboundMessage struct {
+	messageType int
+	data        []byte
+}
+
+type clientConnection struct {
+	conn      *websocket.Conn
+	audio     chan []byte
+	control   chan outboundMessage
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
 // Hub 管理 WebSocket 连接并将音频数据广播给所有连接的浏览器
 type Hub struct {
-	clients   map[*websocket.Conn]bool
+	clients   map[*websocket.Conn]*clientConnection
 	mu        sync.RWMutex
-	writeMu   sync.Mutex // 序列化所有 WebSocket 写操作，防止并发写导致消息损坏
 	format    capture.Format
 	webFormat capture.Format // 发送给浏览器的格式（始终为 16-bit）
 	upgrader  websocket.Upgrader
@@ -41,10 +60,10 @@ type Hub struct {
 	clientFormats map[*websocket.Conn]capture.Format // 每个客户端独立请求的目标格式
 	clientFmtMu   sync.RWMutex
 
-	lastNonSilentAt time.Time   // 最近一次非静音数据经过 Broadcast 的时间
-	manuallyPaused  atomic.Bool // 客户端通过浏览器手动暂停，覆盖音频检测
-	ctx             context.Context
-	cancel          context.CancelFunc
+	lastNonSilentUnixNano atomic.Int64 // 最近一次非静音数据经过 Broadcast 的时间
+	manuallyPaused        atomic.Bool  // 客户端通过浏览器手动暂停，覆盖音频检测
+	ctx                   context.Context
+	cancel                context.CancelFunc
 }
 
 // NewHub 创建新的 Web 播放中心
@@ -59,7 +78,7 @@ func NewHub(format capture.Format) *Hub {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Hub{
-		clients:       make(map[*websocket.Conn]bool),
+		clients:       make(map[*websocket.Conn]*clientConnection),
 		clientFormats: make(map[*websocket.Conn]capture.Format),
 		format:        format,
 		webFormat:     webFmt,
@@ -84,9 +103,9 @@ func (h *Hub) Ctx() context.Context {
 // Broadcast 向所有连接的 WebSocket 客户端广播音频数据
 func (h *Hub) Broadcast(data []byte) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	if len(h.clients) == 0 {
+	hasClients := len(h.clients) > 0
+	h.mu.RUnlock()
+	if !hasClients {
 		return
 	}
 
@@ -95,7 +114,7 @@ func (h *Hub) Broadcast(data []byte) {
 		return
 	}
 
-	h.lastNonSilentAt = time.Now()
+	h.lastNonSilentUnixNano.Store(time.Now().UnixNano())
 
 	// 如果源数据是 32-bit float，转换为 16-bit int
 	if h.format.BitsPerSample == 32 {
@@ -103,39 +122,128 @@ func (h *Hub) Broadcast(data []byte) {
 		data = h.convert32bitTo16bit(data)
 	}
 
-	// 累积到缓冲区，每 ~50ms 发送一次，减少浏览器端播放间隙
+	// 固定按 20ms 分包，在低延迟和调度稳定性之间取平衡。
 	h.accMu.Lock()
 	h.accumBuf = append(h.accumBuf, data...)
 	accLen := len(h.accumBuf)
-	h.accMu.Unlock()
-
-	// 计算目标缓冲区大小：50ms 的 16-bit 音频数据
-	targetSize := h.webFormat.SampleRate * h.webFormat.BytesPerFrame() / 20 // 50ms
+	targetSize := audioPacketSize(h.webFormat)
 	logx.Debugf("webplayer", "WebPlayer: 累积缓冲 %d/%d 字节 (目标 %d)", accLen, cap(h.accumBuf), targetSize)
-	if accLen < targetSize {
+	if targetSize <= 0 || accLen < targetSize {
+		h.accMu.Unlock()
 		return
 	}
 
-	// 取出累积数据
-	h.accMu.Lock()
-	sendData := make([]byte, len(h.accumBuf))
-	copy(sendData, h.accumBuf)
-	h.accumBuf = h.accumBuf[:0]
+	packetCount := accLen / targetSize
+	packets := make([][]byte, packetCount)
+	for i := range packets {
+		packets[i] = make([]byte, targetSize)
+		copy(packets[i], h.accumBuf[i*targetSize:(i+1)*targetSize])
+	}
+	remaining := accLen - packetCount*targetSize
+	copy(h.accumBuf[:remaining], h.accumBuf[packetCount*targetSize:])
+	h.accumBuf = h.accumBuf[:remaining]
 	h.accMu.Unlock()
 
-	// 广播给所有客户端（序列化写入，防止并发写损坏消息）
-	// 按每个客户端请求的格式独立转换
-	h.writeMu.Lock()
-	logx.Debugf("webplayer", "WebPlayer: 广播 %d 字节到 %d 个客户端", len(sendData), len(h.clients))
-	for conn := range h.clients {
-		clientFmt := h.getClientFormat(conn)
-		clientData := h.applyFormatConversion(sendData, h.webFormat, clientFmt)
-		if err := conn.WriteMessage(websocket.BinaryMessage, clientData); err != nil {
-			log.Printf("[WebPlayer] ⚠️  WebSocket 发送失败: %v", err)
-			go h.removeClient(conn)
+	for _, packet := range packets {
+		h.broadcastPCM(packet)
+	}
+}
+
+func audioPacketSize(format capture.Format) int {
+	return format.SampleRate * format.BytesPerFrame() * audioPacketMilliseconds / 1000
+}
+
+func (h *Hub) snapshotClients() []*clientConnection {
+	h.mu.RLock()
+	clients := make([]*clientConnection, 0, len(h.clients))
+	for _, client := range h.clients {
+		clients = append(clients, client)
+	}
+	h.mu.RUnlock()
+	return clients
+}
+
+func (h *Hub) broadcastPCM(data []byte) {
+	clients := h.snapshotClients()
+	logx.Debugf("webplayer", "WebPlayer: 广播 %d 字节到 %d 个客户端", len(data), len(clients))
+	for _, client := range clients {
+		clientFmt := h.getClientFormat(client.conn)
+		clientData := h.applyFormatConversion(data, h.webFormat, clientFmt)
+		h.enqueueAudio(client, clientData)
+	}
+}
+
+func (h *Hub) enqueueAudio(client *clientConnection, data []byte) {
+	select {
+	case <-client.done:
+		return
+	default:
+	}
+
+	select {
+	case client.audio <- data:
+		return
+	default:
+	}
+
+	// 客户端落后时丢弃最旧音频，保持接近实时而不是继续累积延迟。
+	select {
+	case <-client.audio:
+	default:
+	}
+	select {
+	case client.audio <- data:
+	default:
+	}
+}
+
+func (h *Hub) enqueueControl(client *clientConnection, messageType int, data []byte) {
+	msg := outboundMessage{messageType: messageType, data: data}
+	select {
+	case <-client.done:
+		return
+	default:
+	}
+
+	select {
+	case client.control <- msg:
+		return
+	default:
+	}
+	select {
+	case <-client.control:
+	default:
+	}
+	select {
+	case client.control <- msg:
+	default:
+	}
+}
+
+func (h *Hub) clientWriter(client *clientConnection) {
+	for {
+		var msg outboundMessage
+		select {
+		case <-client.done:
+			return
+		case msg = <-client.control:
+		default:
+			select {
+			case <-client.done:
+				return
+			case msg = <-client.control:
+			case data := <-client.audio:
+				msg = outboundMessage{messageType: websocket.BinaryMessage, data: data}
+			}
+		}
+
+		client.conn.SetWriteDeadline(time.Now().Add(clientWriteTimeout))
+		if err := client.conn.WriteMessage(msg.messageType, msg.data); err != nil {
+			log.Printf("[WebPlayer] WebSocket 发送失败: %v", err)
+			h.removeClient(client.conn)
+			return
 		}
 	}
-	h.writeMu.Unlock()
 }
 
 // convert32bitTo16bit 将 32-bit float PCM 转换为 16-bit int PCM
@@ -228,11 +336,12 @@ func (h *Hub) SetClientBitrate(conn *websocket.Conn, bitrate int) {
 		`{"type":"bitrate_changed","bitrate":%d,"sample_rate":%d,"channels":%d,"bits_per_sample":%d}`,
 		actualKbps, target.SampleRate, target.Channels, target.BitsPerSample,
 	)
-	h.writeMu.Lock()
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
-		log.Printf("[WebPlayer] bitrate_changed 发送失败: %v", err)
+	h.mu.RLock()
+	client := h.clients[conn]
+	h.mu.RUnlock()
+	if client != nil {
+		h.enqueueControl(client, websocket.TextMessage, []byte(msg))
 	}
-	h.writeMu.Unlock()
 
 	log.Printf("[WebPlayer] 客户端码率已设置: %dkbps → %s", bitrate, target)
 }
@@ -354,7 +463,8 @@ func convertBitDepth(data []byte, srcBits, dstBits int) []byte {
 
 // IsStreamingAudio 返回 AudioStream 当前是否正在传输非静音音频
 func (h *Hub) IsStreamingAudio() bool {
-	return time.Since(h.lastNonSilentAt) < 5*time.Second
+	last := h.lastNonSilentUnixNano.Load()
+	return last != 0 && time.Since(time.Unix(0, last)) < 5*time.Second
 }
 
 // Flush 强制刷新剩余的累积数据
@@ -369,30 +479,22 @@ func (h *Hub) Flush() {
 	}
 
 	logx.Debugf("webplayer", "WebPlayer: Flush %d 字节到 %d 个客户端", len(data), h.ClientCount())
-
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	h.writeMu.Lock()
-	defer h.writeMu.Unlock()
-	for conn := range h.clients {
-		clientFmt := h.getClientFormat(conn)
-		clientData := h.applyFormatConversion(data, h.webFormat, clientFmt)
-		if err := conn.WriteMessage(websocket.BinaryMessage, clientData); err != nil {
-			go h.removeClient(conn)
-		}
-	}
+	h.broadcastPCM(data)
 }
 
 // removeClient 移除并关闭连接
 func (h *Hub) removeClient(conn *websocket.Conn) {
 	h.mu.Lock()
-	if _, ok := h.clients[conn]; ok {
+	if client, ok := h.clients[conn]; ok {
 		delete(h.clients, conn)
 		h.mu.Unlock()
 		h.clientFmtMu.Lock()
 		delete(h.clientFormats, conn)
 		h.clientFmtMu.Unlock()
-		conn.Close()
+		client.closeOnce.Do(func() {
+			close(client.done)
+			conn.Close()
+		})
 		return
 	}
 	h.mu.Unlock()
@@ -413,9 +515,6 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 为每个连接创建 done channel，用于取消延迟任务
-	done := make(chan struct{})
-
 	// 首先发送音频格式信息（JSON 文本消息）
 	// 始终报告 16-bit，因为 Go 端已经做了格式转换
 	fmtJSON := fmt.Sprintf(
@@ -423,19 +522,24 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		h.webFormat.SampleRate, h.webFormat.Channels,
 	)
 	logx.Debugf("webplayer", "WebPlayer: 发送格式给客户端: %s", fmtJSON)
-	h.writeMu.Lock()
+	conn.SetWriteDeadline(time.Now().Add(clientWriteTimeout))
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(fmtJSON)); err != nil {
-		h.writeMu.Unlock()
 		conn.Close()
 		return
 	}
-	h.writeMu.Unlock()
 
 	// 注册客户端
+	client := &clientConnection{
+		conn:    conn,
+		audio:   make(chan []byte, clientAudioQueueSize),
+		control: make(chan outboundMessage, clientControlQueueSize),
+		done:    make(chan struct{}),
+	}
 	h.mu.Lock()
-	h.clients[conn] = true
+	h.clients[conn] = client
 	count := len(h.clients)
 	h.mu.Unlock()
+	go h.clientWriter(client)
 
 	log.Printf("[WebPlayer] 🖥️  Web 客户端已连接 (当前共 %d 个)", count)
 
@@ -444,7 +548,6 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	// 保持读循环以检测断开
 	defer func() {
-		close(done) // 取消所有延迟任务
 		h.removeClient(conn)
 		h.mu.RLock()
 		remaining := len(h.clients)
@@ -495,8 +598,8 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 						// 当前是手动暂停 → 用户意图恢复 → 清除标记
 						h.manuallyPaused.Store(false)
 					}
-					// 将 lastNonSilentAt 置为过去，使 IsStreamingAudio() 立即返回 false
-					h.lastNonSilentAt = time.Now().Add(-10 * time.Second)
+					// 将最近音频时间置为过去，使 IsStreamingAudio() 立即返回 false
+					h.lastNonSilentUnixNano.Store(time.Now().Add(-10 * time.Second).UnixNano())
 					ExecuteMediaCommand(cmd)
 					// SendInput 是异步的，过早查询会拿到旧状态。
 					// 异步延迟查询：不阻塞读循环，给播放器足够时间响应。
@@ -504,7 +607,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 						select {
 						case <-time.After(800 * time.Millisecond):
 							h.BroadcastState(h.queryCombinedState())
-						case <-done:
+						case <-client.done:
 							return
 						}
 					}()
@@ -516,7 +619,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 						select {
 						case <-time.After(800 * time.Millisecond):
 							h.BroadcastState(h.queryCombinedState())
-						case <-done:
+						case <-client.done:
 							return
 						}
 					}()
@@ -586,12 +689,9 @@ func (h *Hub) Stop() error {
 	// 取消媒体状态轮询goroutine
 	h.cancel()
 
-	h.mu.Lock()
-	for conn := range h.clients {
-		conn.Close()
-		delete(h.clients, conn)
+	for _, client := range h.snapshotClients() {
+		h.removeClient(client.conn)
 	}
-	h.mu.Unlock()
 
 	if h.server != nil {
 		return h.server.Close()

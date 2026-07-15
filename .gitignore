@@ -30,3 +30,4 @@ internal/webplayer/smtc_embed.dll
 cmd/server/audiostream.ico
 cmd/server/icon.res
 cmd/server/rsrc_windows_amd64.syso
+.codewhale/

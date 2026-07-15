@@ -1,6 +1,10 @@
 package webplayer
 
-import "testing"
+import (
+	"testing"
+
+	"audiostream/internal/capture"
+)
 
 func TestPresetFromBitrateKeepsStereo(t *testing.T) {
 	tests := []struct {
@@ -46,6 +50,32 @@ func TestConvertSampleRateSupportsArbitraryRatios(t *testing.T) {
 
 	up := convertSampleRate(frames(0, 1, 2, 3), 32000, 48000, 2)
 	assertFrames(t, up, 0, 0, 1, 2, 2, 3)
+}
+
+func TestAudioPacketSizeIsTwentyMilliseconds(t *testing.T) {
+	format := capture.Format{SampleRate: 48000, Channels: 2, BitsPerSample: 16}
+	if got, want := audioPacketSize(format), 3840; got != want {
+		t.Fatalf("audioPacketSize() = %d, want %d", got, want)
+	}
+}
+
+func TestEnqueueAudioDropsOldestPacket(t *testing.T) {
+	hub := &Hub{}
+	client := &clientConnection{
+		audio: make(chan []byte, 2),
+		done:  make(chan struct{}),
+	}
+
+	hub.enqueueAudio(client, []byte{1})
+	hub.enqueueAudio(client, []byte{2})
+	hub.enqueueAudio(client, []byte{3})
+
+	if got := (<-client.audio)[0]; got != 2 {
+		t.Fatalf("first queued packet = %d, want 2", got)
+	}
+	if got := (<-client.audio)[0]; got != 3 {
+		t.Fatalf("second queued packet = %d, want 3", got)
+	}
 }
 
 func frames(values ...byte) []byte {

@@ -106,14 +106,8 @@ func (h *Hub) BroadcastState(state *MediaState) {
 	mediaStateMu.Lock()
 	mediaState = state
 	mediaStateMu.Unlock()
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	h.writeMu.Lock()
-	defer h.writeMu.Unlock()
-	for conn := range h.clients {
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			go h.removeClient(conn)
-		}
+	for _, client := range h.snapshotClients() {
+		h.enqueueControl(client, websocket.TextMessage, data)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-ole/go-ole"
 	"github.com/moutend/go-wca/pkg/wca"
+	"golang.org/x/sys/windows"
 
 	"audiostream/internal/logx"
 )
@@ -25,6 +26,8 @@ type wasapiLoopback struct {
 	mixFormat    *wca.WAVEFORMATEX
 	bufferFrames uint32
 	blockAlign   uint32
+	eventHandle  windows.Handle
+	eventDriven  bool
 	started      bool
 	closed       bool
 	mu           sync.Mutex
@@ -124,41 +127,35 @@ func (wl *wasapiLoopback) Start() error {
 	// 5. 初始化音频客户端（Loopback 模式）
 	// 使用 REFERENCE_TIME 格式：100 纳秒为单位
 	// 缓冲持续时间设为 0，使用默认值
-	if err := wl.audioClient.Initialize(
-		wca.AUDCLNT_SHAREMODE_SHARED,
-		wca.AUDCLNT_STREAMFLAGS_LOOPBACK,
-		0, // 缓冲持续时间（默认）
-		0, // 周期
-		wl.mixFormat,
-		nil, // 音频会话 GUID
-	); err != nil {
-		logx.Debugf("wasapi", "WASAPI: Initialize 首次失败: %v, 尝试 AUTOCONVERTPCM", err)
-		// 尝试带 AUTOCONVERTPCM 标志重试
-		err2 := wl.audioClient.Initialize(
-			wca.AUDCLNT_SHAREMODE_SHARED,
-			wca.AUDCLNT_STREAMFLAGS_LOOPBACK|wca.AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-			0,
-			0,
-			wl.mixFormat,
-			nil,
-		)
-		if err2 != nil {
-			wl.audioClient.Release()
-			wl.audioDevice.Release()
-			wl.deviceEnum.Release()
-			ole.CoUninitialize()
-			runtime.UnlockOSThread()
-			return fmt.Errorf("初始化音频客户端失败: %w (首次: %v)", err2, err)
+	eventHandle, eventErr := windows.CreateEvent(nil, 0, 0, nil)
+	if eventErr == nil {
+		eventFlags := uint32(wca.AUDCLNT_STREAMFLAGS_LOOPBACK | wca.AUDCLNT_STREAMFLAGS_EVENTCALLBACK)
+		if err := wl.initializeAudioClient(eventFlags); err == nil {
+			wl.eventHandle = eventHandle
+			if err := wl.audioClient.SetEventHandle(uintptr(eventHandle)); err != nil {
+				wl.releaseStartupResources()
+				return fmt.Errorf("设置 WASAPI 事件句柄失败: %w", err)
+			}
+			wl.eventDriven = true
+			logx.Debugf("wasapi", "WASAPI: 已启用事件驱动捕获")
+		} else {
+			windows.CloseHandle(eventHandle)
+			logx.Debugf("wasapi", "WASAPI: 事件驱动不可用 (%v), 回退到低间隔轮询", err)
+		}
+	} else {
+		logx.Debugf("wasapi", "WASAPI: 创建事件失败 (%v), 回退到低间隔轮询", eventErr)
+	}
+
+	if !wl.eventDriven {
+		if err := wl.initializeAudioClient(wca.AUDCLNT_STREAMFLAGS_LOOPBACK); err != nil {
+			wl.releaseStartupResources()
+			return fmt.Errorf("初始化音频客户端失败: %w", err)
 		}
 	}
 
 	// 6. 获取缓冲区大小
 	if err := wl.audioClient.GetBufferSize(&wl.bufferFrames); err != nil {
-		wl.audioClient.Release()
-		wl.audioDevice.Release()
-		wl.deviceEnum.Release()
-		ole.CoUninitialize()
-		runtime.UnlockOSThread()
+		wl.releaseStartupResources()
 		return fmt.Errorf("获取缓冲区大小失败: %w", err)
 	}
 	logx.Debugf("wasapi", "WASAPI: 缓冲区大小 %d 帧", wl.bufferFrames)
@@ -168,8 +165,7 @@ func (wl *wasapiLoopback) Start() error {
 		wca.IID_IAudioCaptureClient,
 		&wl.captureCli,
 	); err != nil {
-		ole.CoUninitialize()
-		runtime.UnlockOSThread()
+		wl.releaseStartupResources()
 		return fmt.Errorf("获取捕获客户端失败: %w", err)
 	}
 
@@ -177,14 +173,71 @@ func (wl *wasapiLoopback) Start() error {
 	if err := wl.audioClient.Start(); err != nil {
 		wl.captureCli.Release()
 		wl.captureCli = nil
-		ole.CoUninitialize()
-		runtime.UnlockOSThread()
+		wl.releaseStartupResources()
 		return fmt.Errorf("启动音频捕获失败: %w", err)
 	}
 
 	wl.started = true
 	logx.Debugf("wasapi", "WASAPI: 捕获已启动")
 	return nil
+}
+
+func (wl *wasapiLoopback) initializeAudioClient(streamFlags uint32) error {
+	err := wl.audioClient.Initialize(
+		wca.AUDCLNT_SHAREMODE_SHARED,
+		streamFlags,
+		0,
+		0,
+		wl.mixFormat,
+		nil,
+	)
+	if err == nil {
+		return nil
+	}
+
+	logx.Debugf("wasapi", "WASAPI: Initialize 失败: %v, 尝试 AUTOCONVERTPCM", err)
+	err2 := wl.audioClient.Initialize(
+		wca.AUDCLNT_SHAREMODE_SHARED,
+		streamFlags|wca.AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+		0,
+		0,
+		wl.mixFormat,
+		nil,
+	)
+	if err2 != nil {
+		return fmt.Errorf("AUTOCONVERTPCM: %w (首次: %v)", err2, err)
+	}
+	return nil
+}
+
+func (wl *wasapiLoopback) releaseStartupResources() {
+	wl.closeEventHandle()
+	if wl.audioClient != nil {
+		wl.audioClient.Release()
+		wl.audioClient = nil
+	}
+	if wl.audioDevice != nil {
+		wl.audioDevice.Release()
+		wl.audioDevice = nil
+	}
+	if wl.deviceEnum != nil {
+		wl.deviceEnum.Release()
+		wl.deviceEnum = nil
+	}
+	if wl.mixFormat != nil {
+		ole.CoTaskMemFree(uintptr(unsafe.Pointer(wl.mixFormat)))
+		wl.mixFormat = nil
+	}
+	ole.CoUninitialize()
+	runtime.UnlockOSThread()
+}
+
+func (wl *wasapiLoopback) closeEventHandle() {
+	if wl.eventHandle != 0 {
+		windows.CloseHandle(wl.eventHandle)
+		wl.eventHandle = 0
+	}
+	wl.eventDriven = false
 }
 
 func (wl *wasapiLoopback) Read(data []byte) (int, error) {
@@ -195,21 +248,48 @@ func (wl *wasapiLoopback) Read(data []byte) (int, error) {
 	}
 	wl.mu.Unlock()
 
-	// 等待可用数据
 	var framesAvailable uint32
+	if wl.eventDriven {
+		result, err := windows.WaitForSingleObject(wl.eventHandle, 100)
+		if err != nil {
+			return 0, fmt.Errorf("等待 WASAPI 事件失败: %w", err)
+		}
+		if result == uint32(windows.WAIT_TIMEOUT) {
+			if err := wl.captureCli.GetNextPacketSize(&framesAvailable); err != nil {
+				return 0, fmt.Errorf("获取下一个包大小失败: %w", err)
+			}
+			if framesAvailable == 0 {
+				return 0, nil
+			}
+			wl.eventDriven = false
+			logx.Debugf("wasapi", "WASAPI: 事件未触发但已有数据，切换为低间隔轮询")
+		}
+		if result != windows.WAIT_OBJECT_0 {
+			return 0, fmt.Errorf("WASAPI 事件等待返回异常状态: 0x%X", result)
+		}
+	} else {
+		deadline := time.Now().Add(100 * time.Millisecond)
+		for {
+			if err := wl.captureCli.GetNextPacketSize(&framesAvailable); err != nil {
+				return 0, fmt.Errorf("获取下一个包大小失败: %w", err)
+			}
+			if framesAvailable > 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				return 0, nil
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
 
-	for {
-		// 检查下一个包的大小
+	if framesAvailable == 0 {
 		if err := wl.captureCli.GetNextPacketSize(&framesAvailable); err != nil {
 			return 0, fmt.Errorf("获取下一个包大小失败: %w", err)
 		}
-
-		if framesAvailable > 0 {
-			break
+		if framesAvailable == 0 {
+			return 0, nil
 		}
-
-		// 短暂休眠，等待数据
-		time.Sleep(time.Millisecond * 5)
 	}
 
 	// 读取数据
@@ -294,6 +374,7 @@ func (wl *wasapiLoopback) Close() error {
 		wl.captureCli.Release()
 		wl.captureCli = nil
 	}
+	wl.closeEventHandle()
 	if wl.audioClient != nil {
 		wl.audioClient.Release()
 		wl.audioClient = nil

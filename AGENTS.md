@@ -79,6 +79,8 @@ Functions in `wasapi.go` **must** call `runtime.LockOSThread()` before `ole.CoIn
 ### WebSocket protocol
 1. Server sends JSON format: `{"type":"format","sample_rate":...,"channels":...,"bits_per_sample":16}`
 2. Server sends binary 16-bit PCM frames (accumulated to ~50ms per message)
+3. Server pushes media state JSON (500ms poll): `{"type":"state","playing":...,"muted":...}` — `muted` 为默认渲染端点静音状态
+4. Client text commands: `{"type":"command","action":"play_pause|previous|next|seek_to|set_volume|get_state|set_bitrate|set_mute",...}`；`set_mute` 携带 `"mute":true|false`，静音电脑扬声器（loopback 采集在端点静音之前，串流不受影响，见 `internal/webplayer/endpointmute.go`）
 
 ## CLI Flags
 

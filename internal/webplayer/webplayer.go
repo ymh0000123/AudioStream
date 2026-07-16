@@ -581,6 +581,11 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 				} else if cmd.Action == "get_state" {
 					// 客户端主动请求状态，立即查询并广播
 					h.BroadcastState(h.queryCombinedState())
+				} else if cmd.Action == "set_mute" {
+					// 静音同步执行（内部已含 GetMute 校验），完成即广播新状态，
+					// 不走 800ms 延迟——静音状态查询是即时的，无 SendInput 旧状态问题。
+					ExecuteMediaCommand(cmd)
+					h.BroadcastState(h.queryCombinedState())
 				} else if cmd.Action == "play_pause" {
 					// play_pause 是切换操作：在异步执行之前主动管理暂停状态。
 					// 优先用 SMTC 权威状态判断当前是否播放，避免 5s 音频窗口误判。

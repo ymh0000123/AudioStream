@@ -19,6 +19,7 @@ type MediaState struct {
 	Album      string `json:"album"`
 	PositionMs int64  `json:"position"`
 	DurationMs int64  `json:"duration"`
+	Muted      bool   `json:"muted"`
 }
 
 var (
@@ -46,7 +47,16 @@ func querySMTCState() *smtcState {
 // and manual pause state. The SMTC state (reported by the media app itself) is the source of truth
 // for playing/paused — it reflects in-app and physical-key pauses instantly, unlike the 5s audio
 // energy window which lags behind actual playback state.
+// 另附带端点静音状态（muted）：500ms 轮询让手机端与本机手动静音保持同步。
 func (h *Hub) queryCombinedState() *MediaState {
+	state := h.queryPlaybackState()
+	if m, ok := QueryEndpointMute(); ok {
+		state.Muted = m
+	}
+	return state
+}
+
+func (h *Hub) queryPlaybackState() *MediaState {
 	// 手动暂停优先：仅当浏览器端发起暂停且尚无音频恢复时认定暂停。
 	// 若 SMTC 已恢复播放，则用户在别处按下了播放，自动清除手动暂停。
 	if h.manuallyPaused.Load() {

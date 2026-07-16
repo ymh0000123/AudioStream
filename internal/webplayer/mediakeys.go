@@ -12,6 +12,7 @@ const (
 	VK_MEDIA_NEXT_TRACK = 0xB0
 	VK_MEDIA_PREV_TRACK = 0xB1
 	VK_MEDIA_PLAY_PAUSE = 0xB3
+	VK_VOLUME_MUTE      = 0xAD
 
 	INPUT_KEYBOARD    = 1
 	KEYEVENTF_KEYDOWN = 0x0000
@@ -99,5 +100,14 @@ func ExecuteMediaCommand(cmd *MediaCommand) {
 		}
 	case "set_volume":
 		ExecuteSetVolume(cmd.Volume)
+	case "set_mute":
+		// 静音电脑扬声器：loopback 采集在端点静音之前，串流不受影响（见 endpointmute.go）
+		if err := SetEndpointMute(cmd.Mute); err != nil {
+			log.Printf("[WebPlayer] 电脑静音(%v)失败: %v", cmd.Mute, err)
+		} else if cmd.Mute {
+			log.Printf("[WebPlayer] 🔇 电脑扬声器已静音（串流不受影响）")
+		} else {
+			log.Printf("[WebPlayer] 🔊 电脑扬声器已恢复")
+		}
 	}
 }
